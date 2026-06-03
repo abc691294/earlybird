@@ -144,6 +144,13 @@ def email_brief(conn):
     cur = conn.cursor()
     blocks = []
 
+    class _Raw(str):
+        pass
+
+    def tlink(t, label=None):
+        return _Raw(f'<a href="https://finance.yahoo.com/quote/{t}" '
+                    f'style="color:#1558d6;text-decoration:none">{html.escape(str(label or t))}</a>')
+
     def section(title, rows):
         """rows = list of cell-tuples; rendered as an aligned HTML table (no monospace)."""
         if not rows:
@@ -151,7 +158,7 @@ def email_brief(conn):
         trs = ""
         for r in rows:
             tds = "".join(
-                f"<td style='padding:2px 12px 2px 0;white-space:nowrap'>{html.escape(str(c))}</td>"
+                f"<td style='padding:2px 12px 2px 0;white-space:nowrap'>{c if isinstance(c, _Raw) else html.escape(str(c))}</td>"
                 for c in r)
             trs += f"<tr>{tds}</tr>"
         blocks.append(f"<p style='margin:18px 0 4px;font-weight:600'>{html.escape(title)}</p>"
@@ -185,7 +192,7 @@ def email_brief(conn):
         WHERE m.mv_3m BETWEEN 15 AND 500 AND (m.price IS NULL OR m.price>=0.10)
         GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) ASC LIMIT 12""")
     section("Merited movers - moved + a real business event (own/watch)",
-            [(r.yf_ticker, (r.sector or '')[:18], r.fit, _cap(r.market_cap),
+            [(tlink(r.yf_ticker), (r.sector or '')[:18], r.fit, _cap(r.market_cap),
               f"3m {r.mv_3m or 0:+.0f}%", f"[{r.ctype or '?'}]") for r in cur.fetchall()])
 
     dbex(cur, """SELECT yf_ticker, MIN(sector) sector, MAX(market_cap) market_cap,
@@ -195,7 +202,7 @@ def email_brief(conn):
         WHERE fit='strong' AND market_cap>=10000000000 AND mv_1m<=-6 AND (price IS NULL OR price>=0.10)
         GROUP BY yf_ticker ORDER BY MAX(mv_1m) ASC LIMIT 12""")
     section("Stalwart dips - large-cap merited on a modest pullback (buying window)",
-            [(r.yf_ticker, (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
+            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
               f"6m {r.mv_6m or 0:+.0f}%", "dip in uptrend" if (r.mv_6m or 0)>0 else "weak trend")
              for r in cur.fetchall()])
 
@@ -205,7 +212,7 @@ def email_brief(conn):
         WHERE p.fit='strong' AND m.mv_1m<=-12 AND (m.price IS NULL OR m.price>=0.10)
         GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC LIMIT 12""")
     section("Pullbacks - strong-fit names down recently",
-            [(r.yf_ticker, (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
+            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
               f"3m {r.mv_3m or 0:+.0f}%", "dip in uptrend" if (r.mv_3m or 0)>0 else "downtrend")
              for r in cur.fetchall()])
 
@@ -215,7 +222,7 @@ def email_brief(conn):
           AND (m.mv_3m IS NULL OR m.mv_3m<30)
         GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) ASC LIMIT 12""")
     section("Very early - strong-fit small-caps not yet moved (scattershot)",
-            [(r.yf_ticker, (r.sector or '')[:18], _cap(r.market_cap), r.matched) for r in cur.fetchall()])
+            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), r.matched) for r in cur.fetchall()])
 
     dbex(cur, """SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, sentiment, LEFT(title,60) ttl,
           (SELECT MAX(fit) FROM tbl_eb_pool p WHERE p.yf_ticker=matched_ticker) fit,
@@ -226,12 +233,12 @@ def email_brief(conn):
         ORDER BY matched_ticker, published DESC""")
     rows = cur.fetchall()
     section("Trump positive mentions (BUY=position, say=praise)",
-            [(("★ " if r.fit=="strong" else "") + (r.matched_name or r.matched_ticker), r.tag, r.ttl) for r in rows])
+            [(_Raw(("★ " if r.fit=="strong" else "") + tlink(r.matched_ticker, r.matched_name or r.matched_ticker)), r.tag, r.ttl) for r in rows])
 
     dbex(cur, """SELECT DISTINCT ticker, theme, is_holding FROM tbl_eb_policy_signal
         WHERE published>=(now()-interval '5 days') ORDER BY is_holding DESC, theme, ticker""")
     section("Trump policy -> beneficiaries",
-            [(("★ " if r.is_holding else "") + r.ticker, r.theme, "he owns it" if r.is_holding else "") for r in cur.fetchall()])
+            [(_Raw(("★ " if r.is_holding else "") + tlink(r.ticker)), r.theme, "he owns it" if r.is_holding else "") for r in cur.fetchall()])
 
     if not blocks:
         return False
