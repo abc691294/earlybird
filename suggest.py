@@ -158,11 +158,11 @@ def email_brief(conn):
         trs = ""
         for r in rows:
             tds = "".join(
-                f"<td style='padding:2px 12px 2px 0;white-space:nowrap'>{c if isinstance(c, _Raw) else html.escape(str(c))}</td>"
+                f"<td style='padding:3px 20px 3px 0;white-space:nowrap;font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1a1a1a'>{c if isinstance(c, _Raw) else html.escape(str(c))}</td>"
                 for c in r)
             trs += f"<tr>{tds}</tr>"
-        blocks.append(f"<p style='margin:18px 0 4px;font-weight:600'>{html.escape(title)}</p>"
-                      f"<table style='border-collapse:collapse;font-size:13px'>{trs}</table>")
+        blocks.append(f"<p style='margin:22px 0 6px;font-weight:700;font-size:16px;font-family:Arial,Helvetica,sans-serif'>{html.escape(title)}</p>"
+                      f"<table style='border-collapse:collapse'>{trs}</table>")
 
     def dedup(rows, key="yf_ticker"):
         seen, out = set(), []
