@@ -132,5 +132,104 @@ def digest(conn):
         print(f"  {own}{r.ticker:6} [{(r.theme or '')[:14]:14}] {r.t}")
 
 
+def _cap(v):
+    return f"{v/1e9:.0f}B" if v and v >= 1e9 else (f"{(v or 0)/1e6:.0f}M" if v else "-")
+
+
+def email_brief(conn):
+    """Build and email a clean, DEDUPED morning brief - actionable sections only
+    (no pump/keyword-refine engine-maintenance noise; one row per ticker)."""
+    import html
+    from trump_news import send_alert
+    cur = conn.cursor()
+    blocks = []
+
+    def section(title, lines):
+        if lines:
+            blocks.append(f"<p style='margin:16px 0 2px;font-weight:600'>{html.escape(title)}</p>"
+                          "<div style='font-family:Consolas,monospace;font-size:13px;line-height:1.5'>"
+                          + "<br>".join(html.escape(x) for x in lines) + "</div>")
+
+    def dedup(rows, key="yf_ticker"):
+        seen, out = set(), []
+        for r in rows:
+            k = getattr(r, key)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+        return out
+
+    dbex(cur, """SELECT p.sector, SUM(CASE WHEN m.mv_3m>=40 THEN 1 ELSE 0 END) movers,
+        (SELECT COUNT(DISTINCT n.yf_ticker) FROM tbl_eb_news n JOIN tbl_eb_pool pp
+          ON pp.yf_ticker=n.yf_ticker AND pp.sector=p.sector
+          WHERE n.catalyst=true AND n.published>=(now()-interval '30 days')) cat
+        FROM tbl_eb_pool p LEFT JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+        GROUP BY p.sector ORDER BY movers DESC""")
+    section("Trending sectors (movers | catalyst-names, 30d)",
+            [f"{r.sector:24} {r.movers:>3} | {r.cat:>3}" for r in cur.fetchall()])
+
+    dbex(cur, """WITH cat AS (SELECT yf_ticker, MAX(catalyst_type) ctype FROM tbl_eb_news
+          WHERE catalyst=true AND published>=(now()-interval '30 days') GROUP BY yf_ticker)
+        SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.fit) fit, MAX(p.market_cap) market_cap,
+               MAX(m.mv_3m) mv_3m, MAX(c.ctype) ctype
+        FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+        JOIN cat c ON c.yf_ticker=p.yf_ticker
+        WHERE m.mv_3m BETWEEN 15 AND 500 AND (m.price IS NULL OR m.price>=0.10)
+        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) ASC LIMIT 12""")
+    section("Merited movers - moved + a real business event (own/watch)",
+            [f"{r.yf_ticker:7} {(r.sector or '')[:16]:16} {r.fit:6} {_cap(r.market_cap):>5} 3m{r.mv_3m or 0:>+5.0f}% [{r.ctype or '?'}]"
+             for r in cur.fetchall()])
+
+    dbex(cur, """SELECT yf_ticker, MIN(sector) sector, MAX(market_cap) market_cap,
+               MAX(mv_1m) mv_1m, MAX(mv_6m) mv_6m FROM (
+          SELECT p.yf_ticker, p.sector, p.market_cap, m.mv_1m, m.mv_6m, p.fit, m.price
+          FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker) q
+        WHERE fit='strong' AND market_cap>=10000000000 AND mv_1m<=-6 AND (price IS NULL OR price>=0.10)
+        GROUP BY yf_ticker ORDER BY MAX(mv_1m) ASC LIMIT 12""")
+    section("Stalwart dips - large-cap merited on a modest pullback (buying window)",
+            [f"{r.yf_ticker:7} {(r.sector or '')[:16]:16} {_cap(r.market_cap):>5} 1m{r.mv_1m or 0:>+5.0f}% 6m{r.mv_6m or 0:>+5.0f}% "
+             f"{'(dip in uptrend)' if (r.mv_6m or 0)>0 else '(weak trend)'}" for r in cur.fetchall()])
+
+    dbex(cur, """SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.market_cap) market_cap,
+               MAX(m.mv_1m) mv_1m, MAX(m.mv_3m) mv_3m
+        FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+        WHERE p.fit='strong' AND m.mv_1m<=-12 AND (m.price IS NULL OR m.price>=0.10)
+        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC LIMIT 12""")
+    section("Pullbacks - strong-fit names down recently",
+            [f"{r.yf_ticker:7} {(r.sector or '')[:16]:16} {_cap(r.market_cap):>5} 1m{r.mv_1m or 0:>+5.0f}% 3m{r.mv_3m or 0:>+5.0f}% "
+             f"{'(dip in uptrend)' if (r.mv_3m or 0)>0 else '(downtrend)'}" for r in cur.fetchall()])
+
+    dbex(cur, """SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.market_cap) market_cap, MAX(p.matched) matched
+        FROM tbl_eb_pool p LEFT JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+        WHERE p.fit='strong' AND p.market_cap BETWEEN 30000000 AND 1500000000
+          AND (m.mv_3m IS NULL OR m.mv_3m<30)
+        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) ASC LIMIT 12""")
+    section("Very early - strong-fit small-caps not yet moved (scattershot)",
+            [f"{r.yf_ticker:7} {(r.sector or '')[:16]:16} {_cap(r.market_cap):>5} ['{r.matched}']" for r in cur.fetchall()])
+
+    dbex(cur, """SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, sentiment, LEFT(title,60) ttl,
+          (SELECT MAX(fit) FROM tbl_eb_pool p WHERE p.yf_ticker=matched_ticker) fit,
+          CASE WHEN title ILIKE '%bought%' OR title ILIKE '%stake%' OR title ILIKE '%disclos%'
+                    OR title ILIKE '%invest%' OR title ILIKE '%acquir%' THEN 'BUY' ELSE 'say' END tag
+        FROM tbl_eb_trump_news WHERE in_universe=true AND sentiment='positive'
+          AND published>=(now()-interval '3 days')
+        ORDER BY matched_ticker, published DESC""")
+    rows = cur.fetchall()
+    section("Trump positive mentions (BUY=position, say=praise; *=strong-fit)",
+            [f"{'*' if r.fit=='strong' else ' '}{(r.matched_name or r.matched_ticker)[:26]:26} [{r.tag}] {r.ttl}" for r in rows])
+
+    dbex(cur, """SELECT DISTINCT ticker, theme, is_holding FROM tbl_eb_policy_signal
+        WHERE published>=(now()-interval '5 days') ORDER BY is_holding DESC, theme, ticker""")
+    section("Trump policy -> beneficiaries (! = he owns it)",
+            [f"{'!' if r.is_holding else ' '}{r.ticker:6} [{r.theme}]" for r in cur.fetchall()])
+
+    if not blocks:
+        return False
+    body = ("<p style='font-family:sans-serif'>EarlyBird morning brief - the engine detects + ranks; "
+            "you judge merit.</p>" + "".join(blocks))
+    return send_alert("EarlyBird Daily Brief", body)
+
+
 if __name__ == "__main__":
-    c = get_conn(); digest(c); c.close()
+    c = get_conn(); digest(c); email_brief(c); c.close()
