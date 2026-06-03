@@ -39,3 +39,8 @@ def get_conn(autocommit=False):
     if not autocommit:
         conn.commit()
     return conn
+
+
+def dbex(cur, sql, *params):
+    """psycopg execute accepting pyodbc-style positional params (wrapped to a tuple)."""
+    cur.execute(sql, params if params else None)

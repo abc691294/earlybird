@@ -1,0 +1,31 @@
+name: Daily Refresh
+on:
+  schedule:
+    - cron: '0 22 * * *'         # 22:00 UTC daily
+  workflow_dispatch:
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+      SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+      SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+      SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+      SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Sector RSS
+        run: python sector_news.py
+      - name: Ticker news
+        run: python news_scrape.py
+      - name: Move detector
+        run: python move_scan.py
+      - name: Trump scan
+        run: python trump_news.py
