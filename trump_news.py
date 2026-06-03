@@ -1,0 +1,543 @@
+"""
+trump_news.py - daily scan for ESTABLISHED stocks Trump has spoken POSITIVELY about.
+
+Intent (per spec):
+  - Capture ANY company Trump mentions (not limited to our universe), but...
+  - ...focus on ESTABLISHED players (large caps), which is what the Wave sweep targets, and
+  - ...keep only POSITIVE sentiment (Trump praising / a favourable Trump-driven move),
+    not attacks/criticism.
+
+Two free sources (no paid API; Truth Social has no free API so this is press-derived):
+  A) DISCOVERY - Google News RSS (Trump + markets). Mapped to a company by explicit
+     ticker OR by an established-company NAME (name matching is cap-gated to large caps
+     so it stays clean - small obscure tickers with common-word names are excluded).
+  B) PRECISION - Trump mentions inside the per-ticker news we already collect (tbl_eb_news).
+
+Sentiment is classified from the headline; only 'positive' rows surface in the digest.
+Stored in tbl_eb_trump_news (with a sentiment column), deduped. Run daily.
+"""
+import os, re, json, ssl, smtplib, html, datetime as dt
+from pathlib import Path
+from email.mime.text import MIMEText
+import feedparser
+from eb_db import get_conn
+
+
+def dbex(cur, sql, *params):
+    """psycopg execute that accepts pyodbc-style positional params (wrapped to a tuple)."""
+    cur.execute(sql, params if params else None)
+
+SECRETS = Path(__file__).parent / "secrets.json"  # same gitignored file weekly_report.py uses
+
+
+def wave_text(label, ticker, interval):
+    """One Wave line for a timeframe, e.g.
+    'Weekly Wave: Neutral, last signal - Strong Buy (29/05/2026)'.
+    Replicates the 'Wave RSI v0.1' Pine indicator (WaveTrend / VuManChu Cipher B):
+    channel 9, average 12, MA 3; ob 60, os -40, sell ob_extreme 75, gold (Strong Buy) <= -80.
+    Returns None if data unavailable."""
+    try:
+        import yfinance as yf
+        period = "3y" if interval == "1wk" else "2y"
+        h = yf.Ticker(ticker).history(period=period, interval=interval)
+        if len(h) < 60:
+            return None
+        src = (h["High"] + h["Low"] + h["Close"]) / 3
+        esa = src.ewm(span=9, adjust=False).mean()
+        de = (src - esa).abs().ewm(span=9, adjust=False).mean()
+        ci = (src - esa) / (0.015 * de)
+        wt1 = ci.ewm(span=12, adjust=False).mean()
+        wt2 = wt1.rolling(3).mean()
+        w1 = float(wt1.iloc[-1])
+        cu = (wt1.shift(1) <= wt2.shift(1)) & (wt1 > wt2)   # crossover up
+        cd = (wt1.shift(1) >= wt2.shift(1)) & (wt1 < wt2)   # crossunder down
+        sig, sdate = "n/a", None
+        for i in range(len(wt1) - 1, max(0, len(wt1) - 300), -1):  # most recent signal
+            if cu.iloc[i] and wt2.iloc[i] <= -40:
+                sig = "Strong Buy" if wt2.iloc[i] <= -80 else "Buy"
+                sdate = wt1.index[i]
+                break
+            if cd.iloc[i] and wt2.iloc[i] >= 75:
+                sig, sdate = "Sell", wt1.index[i]
+                break
+        zone = "Overbought" if w1 >= 60 else "Oversold" if w1 <= -40 else "Neutral"
+        datepart = f" ({sdate.strftime('%d/%m/%Y')})" if sdate is not None else ""
+        return f"{label}: {zone}, last signal - {sig}{datepart}"
+    except Exception:
+        return None
+# a Trump position-taking (BUY-tier) mention is the high-conviction alert trigger
+_BUYTIER = ("bought", "stake", "disclos", "invest", "acquir")
+
+
+def send_alert(subject, body):
+    """Email via the existing Gmail SMTP path. Returns True on success (so callers only
+    mark rows 'alerted' when delivery actually happened). Silent no-op if secrets missing."""
+    try:
+        gu = os.environ.get("GMAIL_USER")
+        if gu:
+            user, pw = gu, os.environ["GMAIL_APP_PASSWORD"]
+            recip = os.environ.get("GMAIL_RECIPIENT", gu)
+        else:
+            cfg = json.loads(SECRETS.read_text())
+            user, pw = cfg["gmail_user"], cfg["gmail_app_password"]
+            recip = cfg.get("recipient", user)
+        msg = MIMEText(body, "html")
+        msg["Subject"] = subject
+        msg["From"] = user
+        msg["To"] = recip
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ssl.create_default_context()) as srv:
+            srv.login(user, pw)
+            srv.send_message(msg)
+        return True
+    except Exception as ex:
+        print(f"  alert email skipped: {str(ex)[:70]}")
+        return False
+
+GNEWS = [
+ 'https://news.google.com/rss/search?q=Trump%20(stock%20OR%20shares%20OR%20stocks)%20when:4d&hl=en-US&gl=US&ceid=US:en',
+ 'https://news.google.com/rss/search?q=Trump%20(praises%20OR%20touts%20OR%20backs%20OR%20great)%20company%20when:5d&hl=en-US&gl=US&ceid=US:en',
+ 'https://news.google.com/rss/search?q=%22Trump%20said%22%20(shares%20OR%20stock)%20when:5d&hl=en-US&gl=US&ceid=US:en',
+ # premium signal: Trump's actual disclosed positions (the Dell/Boeing/Nvidia pattern)
+ 'https://news.google.com/rss/search?q=Trump%20(bought%20OR%20stake%20OR%20%22disclosed%22%20OR%20invests)%20(stock%20OR%20shares)%20when:6d&hl=en-US&gl=US&ceid=US:en',
+]
+
+EST_CAP = 50_000_000_000  # name-based matching only for MEGA caps >= $50B (famous,
+# distinctive names - Boeing/Dell/Apple/IBM/Caterpillar). Below this, name tokens
+# (clean/china/brady) collide with unrelated headlines, so require an explicit ticker.
+
+DDL = """
+IF OBJECT_ID('tbl_eb_trump_news','U') IS NULL
+CREATE TABLE tbl_eb_trump_news (
+  id INT IDENTITY PRIMARY KEY, source VARCHAR(10) NOT NULL,
+  title NVARCHAR(400) NULL, link NVARCHAR(600) NULL, published DATETIME2 NULL,
+  matched_ticker NVARCHAR(20) NULL, matched_name NVARCHAR(150) NULL, in_universe BIT NOT NULL DEFAULT 0,
+  sentiment VARCHAR(8) NULL, guid VARCHAR(320) NOT NULL,
+  fetched_on DATETIME2 NOT NULL DEFAULT now(),
+  CONSTRAINT UQ_eb_trump UNIQUE (guid, matched_ticker));
+"""
+MERGE = """
+INSERT INTO tbl_eb_trump_news (source,title,link,published,matched_ticker,matched_name,in_universe,sentiment,guid)
+  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+  ON CONFLICT (guid, matched_ticker) DO NOTHING
+"""
+
+_STOP = {"trump","stock","stocks","shares","company","group","global","market","markets",
+         "first","united","american","america","national","corp","holdings","technologies",
+         "technology","systems","industries","international","capital","financial","energy",
+         "media","news","power","motors","electric","digital","health","world","value",
+         "growth","future","money","trust","partners","general","standard",
+         "china","chinese","korea","japan","japanese","israel","europe","european",
+         "brady","clean","green","smart","quantum","nuclear","global","value",
+         "visa","data","auto","gold","semi","cyber","solar","wind","cloud",
+         "great","honor","honour","patriot","respect","respected","fantastic","tiger",
+         "congratulations","candidate","endorse","border","strong","american"}
+_SUFFIX = re.compile(r"\b(inc|ltd|limited|corp|corporation|plc|holdings?|group|technolog\w*|"
+                     r"co|sa|ag|nv|se|the|company|systems?|industries|international)\b")
+
+# sentiment - price/Trump-favourable language wins even alongside 'tariff' (e.g. domestic
+# steel rallying on tariffs is positive for those names); pure-negative is attack language.
+_POS = re.compile(r"\b(prais\w*|tout\w*|hail\w*|back(?:s|ed|ing)|endors\w*|boost\w*|rall\w*|surg\w*|"
+                  r"soar\w*|jump\w*|rebound\w*|gain\w*|higher|loves?|favou?r\w*|"
+                  r"trump effect|wins?|win\b|deal|optimism|pop\b|"
+                  r"disclos\w*|buys?|bought|purchas\w*|invest\w*|stake|acquir\w*)\b", re.I)
+_NEG = re.compile(r"\b(slam\w*|blast\w*|attack\w*|criticis\w*|criticiz\w*|threat\w*|prob\w*|"
+                  r"lawsuit|sues?|sued|feud|penal\w*|fraud|plung\w*|sink\w*|tumbl\w*|"
+                  r"plummet\w*|crash\w*|warn\w*|ban\b|bans\b)\b", re.I)
+_WRAP = re.compile(r"\b(dow|s&p|nasdaq|futures|wall street|stock market today|markets? today)\b", re.I)
+_TRUMP = re.compile(r"\bTrump\b")  # proper noun only - excludes verb "trumps"
+
+
+def is_trump(t): return bool(_TRUMP.search(t or ""))
+def is_wrap(t):  return bool(_WRAP.search(t or ""))
+
+
+def sentiment(title):
+    t = title or ""
+    if _POS.search(t):   # price/Trump-favourable language present -> positive
+        return "positive"
+    if _NEG.search(t):
+        return "negative"
+    return "neutral"
+
+
+def _name_token(name):
+    if not name:
+        return None
+    w = _SUFFIX.sub(" ", name.lower())
+    # min len 4 (catches Dell/Ford); the $50B cap gate keeps short common-word tokens
+    # (macy) out. A few 4-letter common words that ARE mega-caps are stoplisted (visa).
+    words = [x for x in re.findall(r"[a-z]+", w) if len(x) >= 4 and x not in _STOP]
+    return words[0] if words else None
+
+
+def build_matcher(cur):
+    """ticker map (all) + established-name token map (cap-gated, largest cap per token)."""
+    dbex(cur, """SELECT u.yf_ticker, u.name, COALESCE(f.market_cap,0) cap
+                   FROM tbl_eb_universe u
+                   LEFT JOIN tbl_eb_fundamentals f ON f.yf_ticker=u.yf_ticker
+                   WHERE u.active=true""")
+    tick_tmp, tok_best = {}, {}
+    for r in cur.fetchall():
+        yf = r.yf_ticker or ""
+        base = yf.split(".")[0].upper()
+        if 2 <= len(base) <= 6:
+            is_us = "." not in yf                        # US primary listings have no suffix
+            ex = tick_tmp.get(base)
+            if ex is None or (is_us and not ex[2]):      # prefer the US listing on a base collision
+                tick_tmp[base] = (yf, r.name, is_us)     # (TKO -> TKO Group US, not TKO.PA Tikehau)
+        if (r.cap or 0) >= EST_CAP and "." not in yf:    # established US names only, by NAME
+            tok = _name_token(r.name)
+            if tok:
+                prev = tok_best.get(tok)
+                if not prev or (r.cap or 0) > prev[0]:   # keep the largest-cap holder of the token
+                    tok_best[tok] = (r.cap or 0, yf, r.name)
+    tick_map = {k: (v[0], v[1]) for k, v in tick_tmp.items()}
+    tok_map = {k: (v[1], v[2]) for k, v in tok_best.items()}
+    return tok_map, tick_map
+
+
+_EXCH = re.compile(r"\((?:NYSE|NASDAQ|NYSEARCA|AMEX|OTC|CBOE)[:\s]+([A-Za-z]{1,6})\)", re.I)
+_CASH = re.compile(r"\$([A-Za-z]{1,6})\b")
+_TKWORD = re.compile(r"(?<![A-Za-z])([A-Z]{3,6})\s+(?:stock|shares|stocks)\b")  # >=3 (kills 'AI stocks')
+
+
+def match_company(title, tok_map, tick_map):
+    """Map a headline to a company. Returns (ticker, name, kind, token).
+    kind='ticker' (explicit, trusted) or 'name' (cap-gated established-name token,
+    needs a proximity check by the caller). (None,None,None,None) if no match."""
+    t = title or ""
+    for rx in (_EXCH, _CASH, _TKWORD):
+        for m in rx.findall(t):
+            if m.upper() in tick_map:
+                tk, nm = tick_map[m.upper()]
+                return tk, nm, "ticker", m
+    for w in re.findall(r"[a-z]+", t.lower()):
+        if w in tok_map:
+            tk, nm = tok_map[w]
+            return tk, nm, "name", w
+    return None, None, None, None
+
+
+def pos_near(title, token, window=45):
+    """True if a positive verb sits within `window` chars of the company token -
+    ties Trump's praise/buy TO the company (kills 'Tom Brady'/wrap false matches)."""
+    low = (title or "").lower()
+    i = low.find((token or "").lower())
+    if i < 0:
+        return False
+    seg = low[max(0, i - window): i + len(token) + window]
+    return bool(_POS.search(seg))
+
+
+def pub(e):
+    p = getattr(e, "published_parsed", None) or getattr(e, "updated_parsed", None)
+    return dt.datetime(*p[:6]) if p else None
+
+
+# PRIMARY sources - read at source so we're early (Google RSS is 2nd/3rd hand and ~2 days late)
+PRIMARY_FEEDS = [
+    ("wh",    "https://www.whitehouse.gov/presidential-actions/feed/"),  # official EOs, same-day
+    ("truth", "https://trumpstruth.org/feed"),                           # his Truth Social posts
+]
+
+
+def _strip_html(s):
+    return re.sub(r"<[^>]+>", " ", s or "").strip()
+
+
+# Truth posts are mostly political; only process ones that actually talk markets/stocks
+_MARKET = re.compile(r"\b(stocks?|shares?|bought|buy|buying|invest(?:ing|ed|ment|or|ors|s)?|"
+                     r"earnings|tariff\w*|market|nasdaq|dow|portfolio)\b|\$[A-Za-z]{2,5}\b", re.I)
+
+
+def ingest_primary(conn, tok_map, tick_map, seen):
+    """Ingest White House actions + Truth Social posts. These ARE Trump, so no is_trump
+    gate - instead require a company/ticker match (else it's political noise). Catches his
+    direct 'I bought X' statements at source, ahead of the news cycle. Policy text with no
+    company (e.g. a tariff EO) is handled by the policy->beneficiary layer, not here."""
+    cur = conn.cursor()
+    ins = 0
+    for src, url in PRIMARY_FEEDS:
+        try:
+            f = feedparser.parse(url)
+        except Exception as ex:
+            print(f"  {src} feed error {str(ex)[:50]}")
+            continue
+        for e in f.entries:
+            raw_title = (getattr(e, "title", "") or "")[:400]
+            summary = _strip_html(getattr(e, "summary", "") or "")
+            text = (raw_title + ". " + summary)[:1200]
+            # Truth post titles are generic ("Post from ..."); show his words instead
+            title = (summary[:300] if src == "truth" and summary else raw_title)[:400]
+            guid = (getattr(e, "id", None) or getattr(e, "link", "") or "")[:320]
+            if not guid or guid in seen:
+                continue
+            seen.add(guid)
+            if src == "truth" and not _MARKET.search(text):
+                continue  # skip his political posts; only stock/market ones matter here
+            tk, nm, kind, tok = match_company(text, tok_map, tick_map)
+            if not tk:
+                continue
+            if kind == "name" and not pos_near(text, tok):
+                continue
+            dbex(cur, MERGE, src, title, (getattr(e, "link", "") or "")[:600],
+                        pub(e), tk, nm, True, sentiment(text), guid)
+            ins += 1
+        conn.commit()
+    return ins
+
+
+# ============================================================================
+# PHASE 2: policy -> beneficiary tickers (a Trump/WH policy theme that moves a sector,
+# even when no single company is named). Premium cross = a beneficiary he also OWNS.
+# ============================================================================
+POLICY_MAP = [
+    ("steel",          r"\bsteel\b",                                  ["CLF", "NUE", "STLD"]),
+    ("aluminum",       r"alumin",                                     ["AA", "CENX"]),
+    ("copper",         r"\bcopper\b",                                 ["FCX", "SCCO"]),
+    ("farm machinery", r"\bfarm|agricultur|tractor|machinery|combine\b", ["DE", "AGCO", "CNH", "TITN"]),
+    ("autos",          r"\bauto\b|automobile|vehicle",                ["F", "GM", "PCAR"]),
+    ("defense",        r"defen[sc]e|military|missile|warship|shipbuild", ["LMT", "RTX", "NOC", "GD", "HII"]),
+    ("energy",         r"\boil\b|drilling|petroleum|\bcrude\b|\blng\b", ["XOM", "CVX"]),
+    ("aerospace",      r"aircraft|aviation|aerospace",                ["BA", "RTX", "GD"]),
+    ("construction",   r"infrastructure|heavy equipment",             ["CAT", "DE", "PCAR"]),
+]
+POLICY_DDL = """
+IF OBJECT_ID('tbl_eb_policy_signal','U') IS NULL
+CREATE TABLE tbl_eb_policy_signal (
+  id INT IDENTITY PRIMARY KEY, source VARCHAR(10), theme NVARCHAR(40),
+  policy_title NVARCHAR(400), link NVARCHAR(600), published DATETIME2,
+  ticker NVARCHAR(20), is_holding BIT NOT NULL DEFAULT 0, alerted BIT NOT NULL DEFAULT 0,
+  guid VARCHAR(320), fetched_on DATETIME2 NOT NULL DEFAULT now(),
+  CONSTRAINT UQ_eb_policy UNIQUE (guid, ticker));
+"""
+POLICY_MERGE = """
+INSERT INTO tbl_eb_policy_signal (source,theme,policy_title,link,published,ticker,is_holding,guid)
+  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+  ON CONFLICT (guid, ticker) DO NOTHING
+"""
+
+
+def trump_holdings(conn):
+    """His disclosed buys, derived from our OWN BUY-tier rows (self-maintaining list)."""
+    cur = conn.cursor()
+    buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
+    dbex(cur, f"SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news "
+                f"WHERE in_universe=true AND ({buy_like})")
+    return {r.matched_ticker for r in cur.fetchall()}
+
+
+# only treat a document as a market catalyst if it's an actual trade/tariff action -
+# excludes nominations, commemorative days, etc. that merely mention a theme word
+_POLICY_ACTION = re.compile(r"tariff|\bdut(?:y|ies)\b|\bimports?\b|\bexports?\b|\btrade\b|"
+                            r"sanction|\bquota\b|\blevy\b|section 232|section 301", re.I)
+
+
+def detect_policy(text):
+    t = (text or "").lower()
+    if not _POLICY_ACTION.search(t):
+        return []                      # not a trade/tariff action - no sector catalyst
+    return [(theme, tickers) for theme, rx, tickers in POLICY_MAP if re.search(rx, t)]
+
+
+def scan_policy(conn):
+    """Scan WH actions for policy themes -> beneficiary tickers (in universe). Flags any
+    beneficiary Trump also owns. Returns count inserted."""
+    cur = conn.cursor()
+    holdings = trump_holdings(conn)
+    dbex(cur, "SELECT yf_ticker FROM tbl_eb_universe WHERE active=true")
+    univ = {r.yf_ticker for r in cur.fetchall()}
+    ins = 0
+    try:
+        f = feedparser.parse("https://www.whitehouse.gov/presidential-actions/feed/")
+    except Exception:
+        return 0
+    for e in f.entries:
+        title = (getattr(e, "title", "") or "")[:400]
+        text = title + " " + _strip_html(getattr(e, "summary", "") or "")
+        guid = (getattr(e, "id", None) or getattr(e, "link", "") or "")[:320]
+        link = (getattr(e, "link", "") or "")[:600]
+        if not guid:
+            continue
+        for theme, tickers in detect_policy(text):
+            for tk in tickers:
+                if tk not in univ:
+                    continue
+                dbex(cur, POLICY_MERGE, "wh", theme, title, link, pub(e),
+                            tk, tk in holdings, guid)
+                ins += 1
+    conn.commit()
+    return ins
+
+
+def send_policy_alerts(conn):
+    """Premium alert: a Trump trade/policy action that benefits a sector AND he personally
+    owns a name in it (the Deere self-dealing pattern). 3-day per-ticker cooldown."""
+    cur = conn.cursor()
+    win = "is_holding=true AND alerted=false AND published >= (now() - interval '3 days')"
+    dbex(cur, f"SELECT theme, ticker, policy_title, link FROM tbl_eb_policy_signal WHERE {win}")
+    rows = cur.fetchall()
+    if not rows:
+        return []
+    seen, blocks = set(), []
+    for r in rows:
+        if r.ticker in seen:
+            continue
+        seen.add(r.ticker)
+        c2 = conn.cursor()
+        dbex(c2, "SELECT name FROM tbl_eb_universe WHERE yf_ticker=%s", r.ticker)
+        row = c2.fetchone()
+        nm = row.name if row else r.ticker
+        head = f"{html.escape(nm)} ({r.ticker}) - Trump owns this, and his {html.escape(r.theme)} action benefits it:"
+        pol = html.escape(r.policy_title or "")
+        if r.link:
+            pol += f' <a href="{html.escape(r.link, quote=True)}">[link]</a>'
+        parts = [head, pol]
+        for tf_label, tf in (("Weekly Wave", "1wk"), ("Daily Wave", "1d")):
+            wl = wave_text(tf_label, r.ticker, tf)
+            if wl:
+                parts.append(html.escape(wl))
+        blocks.append("<p>" + "<br>".join(parts) + "</p>")
+    subj = "Trump Policy + Holding: " + ", ".join(sorted(seen))
+    if not send_alert(subj, "".join(blocks)):
+        return []
+    dbex(cur, f"UPDATE tbl_eb_policy_signal SET alerted=true WHERE {win}")
+    conn.commit()
+    return sorted(seen)
+
+
+def send_pending_alerts(conn):
+    """Email first-seen BUY-tier (Trump position) positive mentions; one block per ticker
+    with the company name + link. Marks rows alerted only on successful send. Returns the
+    list of alerted tickers (reusable: called by main and for manual resends)."""
+    cur = conn.cursor()
+    buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
+    where = (f"in_universe=true AND sentiment='positive' AND alerted=false AND ({buy_like}) "
+             f"AND published >= (now() - interval '2 days')")
+    dbex(cur, f"SELECT matched_ticker, matched_name, title, link FROM tbl_eb_trump_news WHERE {where}")
+    rows = cur.fetchall()
+    if not rows:
+        return []
+    # per-ticker cooldown: skip names already alerted in the last 3 days (no repeat spam
+    # when fresh articles on the same event keep surfacing)
+    dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news
+                   WHERE alerted=true AND fetched_on >= (now() - interval '3 days')""")
+    cooldown = {r.matched_ticker for r in cur.fetchall()}
+    seen_t, blocks, names = set(), [], []
+    for h in rows:
+        if h.matched_ticker in seen_t or h.matched_ticker in cooldown:
+            continue
+        seen_t.add(h.matched_ticker)
+        c2 = conn.cursor()
+        dbex(c2, "SELECT 1 FROM tbl_eb_pool WHERE yf_ticker=%s AND fit='strong'", h.matched_ticker)
+        sf = " (Early Bird Strong Match)" if c2.fetchone() else ""
+        label = h.matched_name or h.matched_ticker      # company name, e.g. "TKO Group Holdings"
+        names.append(label)
+        title_line = html.escape(h.title or "")
+        if h.link:
+            title_line += f' <a href="{html.escape(h.link, quote=True)}">[link]</a>'
+        parts = [f"{html.escape(label)}{sf}:", title_line]
+        for tf_label, tf in (("Weekly Wave", "1wk"), ("Daily Wave", "1d")):
+            wl = wave_text(tf_label, h.matched_ticker, tf)   # self-contained WaveTrend from data
+            if wl:
+                parts.append(html.escape(wl))
+        blocks.append("<p>" + "<br>".join(parts) + "</p>")
+    if blocks:
+        subj = "Trump News Alert: " + ", ".join(sorted(names))
+        body = "".join(blocks)
+        if not send_alert(subj, body):
+            return []  # send failed - leave rows unalerted so it retries next run
+    # mark ALL candidate rows handled (emailed + cooldown-suppressed) so dupes don't linger
+    dbex(cur, f"UPDATE tbl_eb_trump_news SET alerted=true WHERE {where}")
+    conn.commit()
+    return sorted(seen_t)
+
+
+def main():
+    print(f"== trump scan {dt.datetime.now():%Y-%m-%d %H:%M:%S} ==", flush=True)
+    conn = get_conn(); cur = conn.cursor()
+    tok_map, tick_map = build_matcher(cur)
+    seen, ins = set(), 0
+
+    # ---- A) DISCOVERY: Google News ----
+    for url in GNEWS:
+        try:
+            f = feedparser.parse(url)
+        except Exception as ex:
+            print(f"  GNEWS error {str(ex)[:50]}"); continue
+        for e in f.entries:
+            title = (getattr(e, "title", "") or "")[:400]
+            if not is_trump(title):
+                continue
+            guid = (getattr(e, "id", None) or getattr(e, "link", "") or "")[:320]
+            if not guid or guid in seen:
+                continue
+            seen.add(guid)
+            tk, nm, kind, tok = match_company(title, tok_map, tick_map)
+            sent = sentiment(title)
+            # name matches must be non-wrap AND have the positive verb near the company;
+            # explicit ticker matches are trusted as-is
+            name_ok = kind == "name" and not is_wrap(title) and pos_near(title, tok)
+            if tk and (kind == "ticker" or name_ok):
+                dbex(cur, MERGE, "google", title, (getattr(e,"link","") or "")[:600],
+                            pub(e), tk, nm, True, sent, guid)
+                ins += 1
+            elif not tk and sent == "positive" and not is_wrap(title):
+                # "anything he mentions" - log positive un-mappable mentions too (not in digest)
+                dbex(cur, MERGE, "google", title, (getattr(e,"link","") or "")[:600],
+                            pub(e), '', None, False, sent, guid)
+                ins += 1
+        conn.commit()
+
+    # ---- A2) PRIMARY: White House actions + Truth Social posts (read at source = early) ----
+    ins += ingest_primary(conn, tok_map, tick_map, seen)
+
+    # ---- A3) POLICY -> beneficiary tickers (sector catalysts even when no company named) ----
+    pol = scan_policy(conn)
+    if pol:
+        print(f"  policy beneficiaries: +{pol}", flush=True)
+
+    # ---- B) PRECISION: Trump mentions inside news we already collect ----
+    dbex(cur, """SELECT n.yf_ticker, n.title, n.url, n.published, u.name
+                   FROM tbl_eb_news n JOIN tbl_eb_universe u ON u.yf_ticker=n.yf_ticker
+                   WHERE n.title ILIKE '%Trump%' AND n.published >= (now() - interval '3 days')
+                   ORDER BY n.published DESC LIMIT 400""")
+    for r in cur.fetchall():
+        if not is_trump(r.title) or is_wrap(r.title):
+            continue  # require the proper noun and drop generic index/market-wrap headlines
+        guid = ("pool:" + (r.url or (r.yf_ticker + r.title))[:300])[:320]
+        if guid in seen:
+            continue
+        seen.add(guid)
+        dbex(cur, MERGE, "pool", (r.title or "")[:400], (r.url or "")[:600],
+                    r.published, r.yf_ticker, r.name, True, sentiment(r.title), guid)
+        ins += 1
+    conn.commit()
+
+    dbex(cur, """SELECT COUNT(*) n,
+                   SUM(CASE WHEN in_universe=true AND sentiment='positive' THEN 1 ELSE 0 END) pos
+                   FROM tbl_eb_trump_news""")
+    row = cur.fetchone()
+    print(f"trump_news: +{ins} this run | {row.n} total, {row.pos} positive & mapped")
+    alerted = send_pending_alerts(conn)
+    if alerted:
+        print(f"  ALERT emailed: {', '.join(alerted)}")
+    palerted = send_policy_alerts(conn)
+    if palerted:
+        print(f"  POLICY+HOLDING ALERT emailed: {', '.join(palerted)}")
+    conn.close()
+
+
+def recent(conn, days=3):
+    """For the digest: ESTABLISHED names Trump spoke POSITIVELY about, most recent first."""
+    cur = conn.cursor()
+    dbex(cur, """SELECT matched_ticker, matched_name, source, LEFT(title,60) t, published
+                   FROM tbl_eb_trump_news
+                   WHERE in_universe=true AND sentiment='positive'
+                     AND published >= (now() - (%s * interval '1 day'))
+                   ORDER BY published DESC LIMIT 12""", days)
+    return cur.fetchall()
+
+
+if __name__ == "__main__":
+    main()
