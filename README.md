@@ -1,36 +1,42 @@
 # EarlyBird - cloud
 
-Cloud-hosted slice of the EarlyBird research engine. This repo runs the **Trump scan**
-(holdings + posts + policy-beneficiary detection + Wave grading + email alerts) on a
-**24/7 hourly schedule** via GitHub Actions, against a **Supabase Postgres** database.
+The EarlyBird research engine, running entirely in the cloud: **Supabase Postgres** for
+data + **GitHub Actions** cron for compute. No local machine required - it runs 24/7,
+which matters most for the hourly Trump alerts (catalysts break overnight/at weekends).
 
-It exists in the cloud because the highest-value Trump catalysts break overnight and at
-weekends - when a laptop-bound scheduler would be off. GitHub Actions runs regardless.
-
-## What runs
-- **`trump_news.py`** - hourly. Scrapes Google News + White House actions + Truth Social,
-  maps mentions to tickers, detects policy->beneficiary crosses, grades each name on the
-  weekly+daily Wave (computed from price data, no TradingView dependency), and emails an
-  alert on first-seen BUY-tier mentions of established names (3-day per-ticker cooldown).
+## Schedules
+| Workflow | Cron | Does |
+|---|---|---|
+| **Trump Hourly Scan** | `0 * * * *` | `trump_news.py` - holdings + posts + White House/Truth Social + policy beneficiaries + Wave grading + email alerts |
+| **Daily Refresh** | `0 22 * * *` | pool refresh → sector RSS → ticker news → move detector → trump scan → digest |
+| **Weekly Refresh** | `0 6 * * 0` | enrich fundamentals (~1hr) → 13F holdings |
 
 ## Architecture
-- **Data:** Supabase (Postgres 17). Schema in `schema.sql`. RLS deny-all on every table;
-  jobs connect via the Session-pooler role which bypasses RLS. The public Data API is sealed.
-- **Compute:** GitHub Actions cron (`.github/workflows/trump-hourly.yml`), Linux runners.
-- **No LLM, no T212 key** - this pipeline is yfinance + feedparser + pandas only.
+- **Data:** Supabase (Postgres 17). `schema.sql` (tables, RLS deny-all) + `functions.sql`
+  (`fn_eb_screen`). Jobs connect via the Session-pooler role, which bypasses RLS; the
+  public Data API is sealed.
+- **Compute:** GitHub Actions, Linux runners. Public repo = unlimited free minutes, and
+  isolated from any private app-build quota.
+- **No LLM, no T212 key** - yfinance + feedparser + pandas + psycopg only.
+- `eb_db.py` reads env vars (cloud Secrets) first, falling back to a gitignored
+  `secrets.json` (local), so identical code runs in both. `dbex()` wraps psycopg execute
+  to accept positional params.
 
-## Secrets (repository secrets, set in Settings -> Secrets -> Actions)
-| Secret | Value |
-|---|---|
-| `SUPABASE_HOST` / `SUPABASE_PORT` / `SUPABASE_DB` / `SUPABASE_USER` / `SUPABASE_PASSWORD` | Supabase Session-pooler connection fields |
-| `GMAIL_USER` / `GMAIL_APP_PASSWORD` | Gmail SMTP for alert emails |
-| `GMAIL_RECIPIENT` *(optional)* | where alerts go; defaults to `GMAIL_USER` if unset |
+## Secrets (repository secrets)
+`SUPABASE_HOST/PORT/DB/USER/PASSWORD`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`,
+`GMAIL_RECIPIENT` (optional - defaults to `GMAIL_USER`).
+
+## Scripts
+`trump_news` · `pool` (+`functions.sql`) · `sector_news` · `news_scrape` · `move_scan` ·
+`suggest` · `enrich_fundamentals` · `sa_13f`. Each ported from the original SQL Server
+build to Postgres (MERGE→ON CONFLICT, `dbex`, dialect) and verified against Supabase.
 
 ## Local development
-Put a `supabase` block (host/port/dbname/user/password) plus `gmail_user`/`gmail_app_password`
-in a gitignored `secrets.json`, then `python trump_news.py`. `eb_db.py` reads env vars first
-(cloud), falling back to `secrets.json` (local), so the same code runs in both.
+Put `supabase` (host/port/dbname/user/password) + `gmail_user`/`gmail_app_password` in a
+gitignored `secrets.json`, then run any script directly.
 
-## Not yet here (next migration phase)
-The daily engine (universe/pool/enrichment/news/move-detector/digest) still runs locally
-against SQL Server. Porting those scripts to this Postgres stack is the next phase.
+## Notes
+- `build_universe.py` (T212 instrument universe) stays local - it needs the T212 source;
+  the universe is otherwise static in Supabase.
+- The daily digest prints to the workflow log; wire it to email (like the Trump alert)
+  if you want it delivered.
