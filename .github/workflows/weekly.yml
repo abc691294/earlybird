@@ -1,0 +1,25 @@
+name: Weekly Refresh
+on:
+  schedule:
+    - cron: '0 6 * * 0'         # Sunday 06:00 UTC
+  workflow_dispatch:
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
+      SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
+      SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
+      SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
+      SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Enrich fundamentals (~1hr)
+        run: python enrich_fundamentals.py --all
+      - name: 13F holdings
+        run: python sa_13f.py
