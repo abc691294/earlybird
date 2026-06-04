@@ -52,13 +52,14 @@ def wave_text(label, ticker, interval):
         cu = (wt1.shift(1) <= wt2.shift(1)) & (wt1 > wt2)   # crossover up
         cd = (wt1.shift(1) >= wt2.shift(1)) & (wt1 < wt2)   # crossunder down
         sig, sdate = "n/a", None
-        for i in range(len(wt1) - 1, max(0, len(wt1) - 300), -1):  # most recent signal
-            if cu.iloc[i] and wt2.iloc[i] <= -40:
-                sig = "Strong Buy" if wt2.iloc[i] <= -80 else "Buy"
+        for i in range(len(wt1) - 1, max(0, len(wt1) - 300), -1):  # most recent CROSS, either way
+            if cu.iloc[i]:                                          # crossed up
+                sig = "Strong Buy" if wt2.iloc[i] <= -80 else ("Buy" if wt2.iloc[i] <= -40 else "turning up")
                 sdate = wt1.index[i]
                 break
-            if cd.iloc[i] and wt2.iloc[i] >= 75:
-                sig, sdate = "Sell", wt1.index[i]
+            if cd.iloc[i]:                                          # crossed down (cancels any older buy)
+                sig = "Sell" if wt2.iloc[i] >= 75 else "rolling over"
+                sdate = wt1.index[i]
                 break
         zone = "Overbought" if w1 >= 60 else "Oversold" if w1 <= -40 else "Neutral"
         datepart = f" ({sdate.strftime('%d/%m/%Y')})" if sdate is not None else ""

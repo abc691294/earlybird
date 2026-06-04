@@ -48,11 +48,12 @@ def live_buy(df, recent_bars):
     cu = (wt1.shift(1) <= wt2.shift(1)) & (wt1 > wt2)
     cd = (wt1.shift(1) >= wt2.shift(1)) & (wt1 < wt2)
     sig, idx = None, None
-    for i in range(len(wt1) - 1, max(0, len(wt1) - 300), -1):
-        if cu.iloc[i] and wt2.iloc[i] <= -40:
-            sig = "Strong Buy" if wt2.iloc[i] <= -80 else "Buy"; idx = i; break
-        if cd.iloc[i] and wt2.iloc[i] >= 75:
-            sig = "Sell"; idx = i; break
+    for i in range(len(wt1) - 1, max(0, len(wt1) - 300), -1):       # most recent CROSS, either way
+        if cu.iloc[i]:
+            sig = "Strong Buy" if wt2.iloc[i] <= -80 else ("Buy" if wt2.iloc[i] <= -40 else "up")
+            idx = i; break
+        if cd.iloc[i]:
+            sig = "down"; idx = i; break                            # rolled over -> no live buy
     if sig not in ("Buy", "Strong Buy"):
         return None
     if (len(wt1) - 1 - idx) > recent_bars:
