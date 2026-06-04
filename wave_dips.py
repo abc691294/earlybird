@@ -104,7 +104,7 @@ def scan(conn):
         rows += ("<tr>" + _cell(link) + _cell(html.escape((sec or "")[:18])) + _cell(f"{cap/1e9:.0f}B")
                  + _cell(f"6m {mv6:+.0f}%") + _cell(html.escape(" / ".join(parts))) + "</tr>")
     body = ("<div style='font-family:Arial,Helvetica,sans-serif;color:#1a1a1a'>"
-            "<p>Big strong-fit names with good movement now at a Wave buy (weekly or daily) - "
+            "<p>Big strong-fit names now at a Wave buy (weekly or daily) - "
             "a pullback entry on a leader:</p>"
             f"<table style='border-collapse:collapse'>{rows}</table></div>")
     ok = send_alert("EarlyBird Pullback Entries", body)
