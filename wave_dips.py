@@ -17,7 +17,7 @@ from trump_news import send_alert
 
 MIN_CAP = 5_000_000_000     # big pool names only
 WEEKLY_RECENT_BARS = 2      # weekly buy must have JUST turned (this/last week)
-DAILY_RECENT_BARS = 3       # daily buy must have JUST turned (last ~3 sessions)
+DAILY_RECENT_BARS = 5       # daily buy must have JUST turned (within the last week)
 
 # NASDAQ-100 minus Tesla (Musk mandate) and the biotech/healthcare members (mandate).
 NAS100 = ("AAPL ABNB ADBE ADI ADP ADSK AEP AMAT AMD AMZN APP ARM ASML AVGO AXON BKNG BKR CCEP "
