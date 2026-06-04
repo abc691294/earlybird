@@ -33,3 +33,5 @@ jobs:
         run: python trump_news.py
       - name: Digest
         run: python suggest.py
+      - name: Pullback entries (Wave)
+        run: python wave_dips.py
