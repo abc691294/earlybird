@@ -1,7 +1,7 @@
 """
 wave_dips.py - daily pullback-entry scan.
 
-Takes the big, moving, strong-fit names (established leaders that are working) and emails
+Takes the big strong-fit names (established leaders, any direction) and emails
 the ones that have pulled back to a Wave Buy or Strong-Buy on the WEEKLY or DAILY timeframe.
 The point: get told when a leader dips to a buyable point, instead of watching them by hand.
 Reuses the WaveTrend calc (same as the Trump alert), so no TradingView app is needed.
@@ -12,7 +12,6 @@ from eb_db import get_conn
 from trump_news import send_alert
 
 MIN_CAP = 5_000_000_000     # big names only
-MIN_MOVE_6M = 20            # "good movement" - up at least 20% over 6 months
 WEEKLY_RECENT_BARS = 6      # weekly buy must be within ~6 weeks
 DAILY_RECENT_BARS = 10      # daily buy must be within ~10 trading days
 
@@ -20,9 +19,9 @@ DAILY_RECENT_BARS = 10      # daily buy must be within ~10 trading days
 def candidates(conn):
     cur = conn.cursor()
     cur.execute("""SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.market_cap) cap, MAX(m.mv_6m) mv6
-        FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
-        WHERE p.fit='strong' AND p.market_cap>=%s AND m.mv_6m>=%s AND p.yf_ticker NOT LIKE '%%.%%'
-        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC""", (MIN_CAP, MIN_MOVE_6M))
+        FROM tbl_eb_pool p LEFT JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+        WHERE p.fit='strong' AND p.market_cap>=%s AND p.yf_ticker NOT LIKE '%%.%%'
+        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC""", (MIN_CAP,))
     return cur.fetchall()
 
 
@@ -102,7 +101,7 @@ def scan(conn):
         if d:
             parts.append(f"Daily {d[1]} ({d[2]})")
         rows += ("<tr>" + _cell(link) + _cell(html.escape((sec or "")[:18])) + _cell(f"{cap/1e9:.0f}B")
-                 + _cell(f"6m +{mv6:.0f}%") + _cell(html.escape(" / ".join(parts))) + "</tr>")
+                 + _cell(f"6m {mv6:+.0f}%") + _cell(html.escape(" / ".join(parts))) + "</tr>")
     body = ("<div style='font-family:Arial,Helvetica,sans-serif;color:#1a1a1a'>"
             "<p>Big strong-fit names with good movement now at a Wave buy (weekly or daily) - "
             "a pullback entry on a leader:</p>"
