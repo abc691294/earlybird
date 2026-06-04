@@ -16,6 +16,7 @@ from eb_db import get_conn
 from trump_news import send_alert
 
 MIN_CAP = 5_000_000_000     # big pool names only
+MONTHLY_RECENT_BARS = 2     # monthly buy must have JUST turned (this/last month) - senior signal
 WEEKLY_RECENT_BARS = 2      # weekly buy must have JUST turned (this/last week)
 DAILY_RECENT_BARS = 5       # daily buy must have JUST turned (within the last week)
 
@@ -90,11 +91,16 @@ def scan(conn):
     tickers = [c[0] for c in cands]
     if not tickers:
         return False
+    mo = yf.download(tickers, period="10y", interval="1mo", auto_adjust=True, progress=False, group_by="ticker")
     wk = yf.download(tickers, period="3y", interval="1wk", auto_adjust=True, progress=False, group_by="ticker")
     dy = yf.download(tickers, period="1y", interval="1d", auto_adjust=True, progress=False, group_by="ticker")
     multi = len(tickers) > 1
     hits = []
     for ticker, sector, cap, mv6 in cands:
+        try:
+            mdf = mo[ticker] if multi else mo
+        except Exception:
+            mdf = None
         try:
             wdf = wk[ticker] if multi else wk
         except Exception:
@@ -103,19 +109,24 @@ def scan(conn):
             ddf = dy[ticker] if multi else dy
         except Exception:
             ddf = None
+        m = live_buy(mdf, MONTHLY_RECENT_BARS) if mdf is not None else None
         w = live_buy(wdf, WEEKLY_RECENT_BARS) if wdf is not None else None
         d = live_buy(ddf, DAILY_RECENT_BARS) if ddf is not None else None
-        if w or d:
-            score = (4 if w and w[1] == "Strong Buy" else 3 if w else 0) + (2 if d and d[1] == "Strong Buy" else 1 if d else 0)
-            hits.append((score, ticker, sector, cap, mv6, w, d))
+        if m or w or d:
+            score = ((8 if m and m[1] == "Strong Buy" else 6 if m else 0)
+                     + (4 if w and w[1] == "Strong Buy" else 3 if w else 0)
+                     + (2 if d and d[1] == "Strong Buy" else 1 if d else 0))
+            hits.append((score, ticker, sector, cap, mv6, m, w, d))
     if not hits:
         print("wave_dips: no pullback entries today")
         return False
     rows = ""
-    for _, t, sec, cap, mv6, w, d in sorted(hits, key=lambda h: -h[0]):
+    for _, t, sec, cap, mv6, m, w, d in sorted(hits, key=lambda h: -h[0]):
         link = (f'<a href="https://finance.yahoo.com/quote/{t}" '
                 f'style="color:#1558d6;text-decoration:none">{t}</a>')
         parts = []
+        if m:
+            parts.append(f"Monthly {m[1]} ({m[2]})")
         if w:
             parts.append(f"Weekly {w[1]} ({w[2]})")
         if d:
@@ -125,7 +136,8 @@ def scan(conn):
         rows += ("<tr>" + _cell(link) + _cell(html.escape((sec or "")[:18])) + _cell(capx)
                  + _cell(mvx) + _cell(html.escape(" / ".join(parts))) + "</tr>")
     body = ("<div style='font-family:Arial,Helvetica,sans-serif;color:#1a1a1a'>"
-            "<p>Names now at a Wave buy (weekly or daily) - a pullback entry on a leader. "
+            "<p>Names now at a Wave buy (monthly, weekly or daily) - a pullback entry on a leader. "
+            "Monthly is the senior signal and sorts to the top. "
             "Covers our strong-fit pool and the NASDAQ-100:</p>"
             f"<table style='border-collapse:collapse'>{rows}</table></div>")
     ok = send_alert("EarlyBird Pullback Entries", body)
