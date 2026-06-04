@@ -16,8 +16,8 @@ from eb_db import get_conn
 from trump_news import send_alert
 
 MIN_CAP = 5_000_000_000     # big pool names only
-WEEKLY_RECENT_BARS = 6      # weekly buy must be within ~6 weeks
-DAILY_RECENT_BARS = 10      # daily buy must be within ~10 trading days
+WEEKLY_RECENT_BARS = 2      # weekly buy must have JUST turned (this/last week)
+DAILY_RECENT_BARS = 3       # daily buy must have JUST turned (last ~3 sessions)
 
 # NASDAQ-100 minus Tesla (Musk mandate) and the biotech/healthcare members (mandate).
 NAS100 = ("AAPL ABNB ADBE ADI ADP ADSK AEP AMAT AMD AMZN APP ARM ASML AVGO AXON BKNG BKR CCEP "
