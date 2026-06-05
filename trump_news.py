@@ -128,6 +128,8 @@ _STOP = {"trump","stock","stocks","shares","company","group","global","market","
          "media","news","power","motors","electric","digital","health","world","value",
          "growth","future","money","trust","partners","general","standard",
          "china","chinese","korea","japan","japanese","israel","europe","european",
+         "australia","australian","canada","canadian","britain","british","mexico","mexican",
+         "india","indian","france","french","germany","german","spain","spanish","brazil",
          "brady","clean","green","smart","quantum","nuclear","global","value",
          "visa","data","auto","gold","semi","cyber","solar","wind","cloud",
          "great","honor","honour","patriot","respect","respected","fantastic","tiger",
@@ -150,6 +152,15 @@ _TRUMP = re.compile(r"\bTrump\b")  # proper noun only - excludes verb "trumps"
 
 def is_trump(t): return bool(_TRUMP.search(t or ""))
 def is_wrap(t):  return bool(_WRAP.search(t or ""))
+
+
+def strip_src(title):
+    """Google News headlines end with ' - Publisher' (e.g. ' - Investing.com Australia').
+    That suffix is NOT article content - matching against it caused false hits (a country
+    word in the publisher matched a company name; 'Investing.com' faked positive sentiment).
+    Drop the final ' - <publisher>' segment for matching; the full title is still stored."""
+    t = title or ""
+    return t.rsplit(" - ", 1)[0].strip() if " - " in t else t
 
 
 def sentiment(title):
@@ -474,16 +485,17 @@ def main():
             if not guid or guid in seen:
                 continue
             seen.add(guid)
-            tk, nm, kind, tok = match_company(title, tok_map, tick_map)
-            sent = sentiment(title)
+            mtitle = strip_src(title)               # match on the headline, not the publisher tag
+            tk, nm, kind, tok = match_company(mtitle, tok_map, tick_map)
+            sent = sentiment(mtitle)
             # name matches must be non-wrap AND have the positive verb near the company;
             # explicit ticker matches are trusted as-is
-            name_ok = kind == "name" and not is_wrap(title) and pos_near(title, tok)
+            name_ok = kind == "name" and not is_wrap(mtitle) and pos_near(mtitle, tok)
             if tk and (kind == "ticker" or name_ok):
                 dbex(cur, MERGE, "google", title, (getattr(e,"link","") or "")[:600],
                             pub(e), tk, nm, True, sent, guid)
                 ins += 1
-            elif not tk and sent == "positive" and not is_wrap(title):
+            elif not tk and sent == "positive" and not is_wrap(mtitle):
                 # "anything he mentions" - log positive un-mappable mentions too (not in digest)
                 dbex(cur, MERGE, "google", title, (getattr(e,"link","") or "")[:600],
                             pub(e), '', None, False, sent, guid)
