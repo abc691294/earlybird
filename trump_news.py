@@ -17,10 +17,81 @@ Sentiment is classified from the headline; only 'positive' rows surface in the d
 Stored in tbl_eb_trump_news (with a sentiment column), deduped. Run daily.
 """
 import os, re, json, ssl, smtplib, html, datetime as dt
+import urllib.request, urllib.parse
 from pathlib import Path
 from email.mime.text import MIMEText
 import feedparser
 from eb_db import get_conn
+
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+_DATE_RX = [
+    re.compile(r'"datePublished"\s*:\s*"([^"]+)"', re.I),
+    re.compile(r'property=["\']article:published_time["\']\s+content=["\']([^"\']+)', re.I),
+    re.compile(r'content=["\']([^"\']+)["\']\s+property=["\']article:published_time["\']', re.I),
+    re.compile(r'name=["\'](?:pubdate|publishdate|publish-date|date)["\']\s+content=["\']([^"\']+)', re.I),
+    re.compile(r'<time[^>]+datetime=["\']([^"\']+)', re.I),
+]
+
+
+def _http(url, timeout=8, data=None, ctype=None, limit=400_000):
+    h = {"User-Agent": _UA, "Accept-Language": "en-GB,en;q=0.9", "Referer": "https://news.google.com/"}
+    if ctype:
+        h["Content-Type"] = ctype
+    req = urllib.request.Request(url, data=data, headers=h)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read(limit).decode("utf-8", "ignore")
+
+
+def resolve_gnews(url, timeout=8):
+    """Decode a Google News RSS link to the real publisher URL via Google's batchexecute
+    endpoint. Returns the publisher URL or None. Google News links don't HTTP-redirect."""
+    if "news.google.com" not in (url or ""):
+        return url
+    try:
+        page = _http(url, timeout, limit=2_000_000)
+        sg = re.search(r'data-n-a-sg="([^"]+)', page)
+        ts = re.search(r'data-n-a-ts="([^"]+)', page)
+        aid = re.search(r'data-n-a-id="([^"]+)', page)
+        if not (sg and ts and aid):
+            return None
+        inner = json.dumps(["garturlreq", [["X", "X", ["X", "X"], None, None, 1, 1, "US:en",
+                None, 1, None, None, None, None, None, 0, 1], "X", "X", 1, [1, 1, 1], 1, 1,
+                None, 0, 0, None, 0], aid.group(1), int(ts.group(1)), sg.group(1)])
+        freq = json.dumps([[["Fbv4je", inner, None, "generic"]]])
+        body = urllib.parse.urlencode({"f.req": freq}).encode()
+        resp = _http("https://news.google.com/_/DotsSplashUi/data/batchexecute", timeout,
+                     body, "application/x-www-form-urlencoded;charset=UTF-8")
+        m = re.search(r'(https?://(?!news\.google\.com)[^\\"]+)', resp.replace("\\/", "/"))
+        return m.group(1).rstrip("\\") if m else None
+    except Exception:
+        return None
+
+
+def article_date(url, timeout=8):
+    """Resolve a story's REAL publish date: decode the Google News link to the publisher,
+    then read the publisher's date metadata. Returns a naive UTC datetime, or None if it
+    can't be determined (publisher blocks bots). Google re-dates recycled articles, so the
+    RSS date alone is not trustworthy for freshness."""
+    real = resolve_gnews(url, timeout)
+    if not real:
+        return None
+    try:
+        raw = _http(real, timeout)
+    except Exception:
+        return None
+    for rx in _DATE_RX:
+        m = rx.search(raw)
+        if not m:
+            continue
+        s = m.group(1).strip()
+        try:
+            d = dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return (d - d.utcoffset()).replace(tzinfo=None) if d.tzinfo else d
+        except Exception:
+            mm = re.match(r"(\d{4})-(\d{2})-(\d{2})", s)
+            if mm:
+                return dt.datetime(int(mm[1]), int(mm[2]), int(mm[3]))
+    return None
 
 
 def dbex(cur, sql, *params):
@@ -435,10 +506,21 @@ def send_pending_alerts(conn):
     dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news
                    WHERE alerted=true AND fetched_on >= (now() - interval '3 days')""")
     cooldown = {r.matched_ticker for r in cur.fetchall()}
+    FRESH_DAYS = 3
+    now = dt.datetime.utcnow()
     seen_t, blocks, names = set(), [], []
     for h in rows:
         if h.matched_ticker in seen_t or h.matched_ticker in cooldown:
             continue
+        # verify the REAL article date (Google re-dates recycled stories); persist the
+        # correction so future runs trust it, and skip anything genuinely stale.
+        real = article_date(h.link)
+        if real is not None:
+            dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s WHERE link=%s", real, h.link)
+            conn.commit()
+            if (now - real).days > FRESH_DAYS:
+                print(f"  stale-skip {h.matched_ticker}: article dated {real:%Y-%m-%d}")
+                continue
         seen_t.add(h.matched_ticker)
         c2 = conn.cursor()
         dbex(c2, "SELECT 1 FROM tbl_eb_pool WHERE yf_ticker=%s AND fit='strong'", h.matched_ticker)
