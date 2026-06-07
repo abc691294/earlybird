@@ -31,7 +31,5 @@ jobs:
         run: python move_scan.py
       - name: Trump scan
         run: python trump_news.py
-      - name: Digest
+      - name: Consolidated daily brief (Wave + Convergence + Pool + Catalysts + Trump)
         run: python suggest.py
-      - name: Pullback entries (Wave)
-        run: python wave_dips.py

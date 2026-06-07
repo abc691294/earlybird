@@ -86,11 +86,14 @@ def _cell(x):
     return f"<td style='padding:3px 18px 3px 0;font-family:Arial,Helvetica,sans-serif;font-size:15px;color:#1a1a1a'>{x}</td>"
 
 
-def scan(conn):
+def scan_signals(conn):
+    """Detection only - returns a sorted list of hits without sending email.
+    Each hit: (score, ticker, sector, cap, mv6, monthly_sig, weekly_sig, daily_sig).
+    Allows the consolidated digest to include the Wave entries inline."""
     cands = candidates(conn)
     tickers = [c[0] for c in cands]
     if not tickers:
-        return False
+        return []
     mo = yf.download(tickers, period="10y", interval="1mo", auto_adjust=True, progress=False, group_by="ticker")
     wk = yf.download(tickers, period="3y", interval="1wk", auto_adjust=True, progress=False, group_by="ticker")
     dy = yf.download(tickers, period="1y", interval="1d", auto_adjust=True, progress=False, group_by="ticker")
@@ -117,11 +120,18 @@ def scan(conn):
                      + (4 if w and w[1] == "Strong Buy" else 3 if w else 0)
                      + (2 if d and d[1] == "Strong Buy" else 1 if d else 0))
             hits.append((score, ticker, sector, cap, mv6, m, w, d))
+    return sorted(hits, key=lambda h: -h[0])
+
+
+def scan(conn):
+    """Standalone email - kept for backwards compatibility but the consolidated digest
+    in suggest.py now includes these signals inline. Run only if invoked directly."""
+    hits = scan_signals(conn)
     if not hits:
         print("wave_dips: no pullback entries today")
         return False
     rows = ""
-    for _, t, sec, cap, mv6, m, w, d in sorted(hits, key=lambda h: -h[0]):
+    for _, t, sec, cap, mv6, m, w, d in hits:
         link = (f'<a href="https://finance.yahoo.com/quote/{t}" '
                 f'style="color:#1558d6;text-decoration:none">{t}</a>')
         parts = []

@@ -137,10 +137,18 @@ def _cap(v):
 
 
 def email_brief(conn):
-    """Build and email a clean, DEDUPED morning brief - actionable sections only
-    (no pump/keyword-refine engine-maintenance noise; one row per ticker)."""
+    """Consolidated daily email - everything in one place, in order of signal strength:
+      1. Wave entries (monthly > weekly > daily turns from oversold) - the cleanest timing signal
+      2. Cross-fund convergence (held by 3+ conviction managers) - the cleanest conviction signal
+      3. Merited movers (moved + real business catalyst)
+      4. Pullbacks (strong-fit names down recently - all cap sizes, sorted big-first)
+      5. Very early (strong-fit small-caps not yet moved)
+      6. Trump positive mentions + policy beneficiaries
+    One row per ticker; dropped: trending-sector header, pump/keyword-refine engine noise."""
     import html
     from trump_news import send_alert
+    from wave_dips import scan_signals
+    from converge import cross_fund_convergence
     cur = conn.cursor()
     blocks = []
 
@@ -152,7 +160,6 @@ def email_brief(conn):
                     f'style="color:#1558d6;text-decoration:none">{html.escape(str(label or t))}</a>')
 
     def section(title, rows):
-        """rows = list of cell-tuples; rendered as an aligned HTML table (no monospace)."""
         if not rows:
             return
         trs = ""
@@ -164,25 +171,34 @@ def email_brief(conn):
         blocks.append(f"<p style='margin:22px 0 6px;font-weight:700;font-size:16px;font-family:Arial,Helvetica,sans-serif'>{html.escape(title)}</p>"
                       f"<table style='border-collapse:collapse'>{trs}</table>")
 
-    def dedup(rows, key="yf_ticker"):
-        seen, out = set(), []
-        for r in rows:
-            k = getattr(r, key)
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(r)
-        return out
+    # 1. Wave entries (the freshly turned dips)
+    try:
+        hits = scan_signals(conn)
+    except Exception as ex:
+        print(f"wave scan failed: {ex}"); hits = []
+    if hits:
+        wave_rows = []
+        for _, t, sec, cap, mv6, m, w, d in hits[:30]:
+            parts = []
+            if m: parts.append(f"Monthly {m[1]}")
+            if w: parts.append(f"Weekly {w[1]}")
+            if d: parts.append(f"Daily {d[1]}")
+            wave_rows.append((tlink(t), (sec or '')[:18], _cap(cap), " / ".join(parts)))
+        section("Wave entries - names freshly turned (monthly > weekly > daily, strongest first)", wave_rows)
 
-    dbex(cur, """SELECT p.sector, SUM(CASE WHEN m.mv_3m>=40 THEN 1 ELSE 0 END) movers,
-        (SELECT COUNT(DISTINCT n.yf_ticker) FROM tbl_eb_news n JOIN tbl_eb_pool pp
-          ON pp.yf_ticker=n.yf_ticker AND pp.sector=p.sector
-          WHERE n.catalyst=true AND n.published>=(now()-interval '30 days')) cat
-        FROM tbl_eb_pool p LEFT JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
-        GROUP BY p.sector ORDER BY movers DESC""")
-    section("Trending sectors (30d)",
-            [(r.sector, f"{r.movers} movers", f"{r.cat} catalyst-names") for r in cur.fetchall()])
+    # 2. Cross-fund convergence (3+ conviction managers)
+    try:
+        conv_rows, conv_period = cross_fund_convergence(conn, min_funds=3, limit=15)
+    except Exception as ex:
+        print(f"convergence query failed: {ex}"); conv_rows, conv_period = [], None
+    if conv_rows:
+        section(f"Cross-fund convergence (held by 3+ conviction managers, as of {conv_period})",
+                [(tlink(r["ticker"]) if r["ticker"] else r["name"][:30],
+                  f"{r['funds']} funds",
+                  f"${r['total_val']/1e9:.2f}B" if r['total_val'] >= 1e9 else f"${r['total_val']/1e6:.0f}M",
+                  r["funds_list"][:64]) for r in conv_rows])
 
+    # 3. Merited movers (moved + business catalyst)
     dbex(cur, """WITH cat AS (SELECT yf_ticker, MAX(catalyst_type) ctype FROM tbl_eb_news
           WHERE catalyst=true AND published>=(now()-interval '30 days') GROUP BY yf_ticker)
         SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.fit) fit, MAX(p.market_cap) market_cap,
@@ -191,31 +207,23 @@ def email_brief(conn):
         JOIN cat c ON c.yf_ticker=p.yf_ticker
         WHERE m.mv_3m BETWEEN 15 AND 500 AND (m.price IS NULL OR m.price>=0.10)
         GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) ASC LIMIT 12""")
-    section("Merited movers - moved + a real business event (own/watch)",
+    section("Merited movers - moved + a real business event",
             [(tlink(r.yf_ticker), (r.sector or '')[:18], r.fit, _cap(r.market_cap),
               f"3m {r.mv_3m or 0:+.0f}%", f"[{r.ctype or '?'}]") for r in cur.fetchall()])
 
-    dbex(cur, """SELECT yf_ticker, MIN(sector) sector, MAX(market_cap) market_cap,
-               MAX(mv_1m) mv_1m, MAX(mv_6m) mv_6m FROM (
-          SELECT p.yf_ticker, p.sector, p.market_cap, m.mv_1m, m.mv_6m, p.fit, m.price
-          FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker) q
-        WHERE fit='strong' AND market_cap>=10000000000 AND mv_1m<=-6 AND (price IS NULL OR price>=0.10)
-        GROUP BY yf_ticker ORDER BY MAX(mv_1m) ASC LIMIT 12""")
-    section("Stalwart dips - large-cap merited on a modest pullback (buying window)",
-            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
-              f"6m {r.mv_6m or 0:+.0f}%", "dip in uptrend" if (r.mv_6m or 0)>0 else "weak trend")
-             for r in cur.fetchall()])
-
+    # 4. Pullbacks - merged stalwart + standard (any cap, strong-fit, down recently, biggest first)
     dbex(cur, """SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.market_cap) market_cap,
-               MAX(m.mv_1m) mv_1m, MAX(m.mv_3m) mv_3m
+               MAX(m.mv_1m) mv_1m, MAX(m.mv_6m) mv_6m
         FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
-        WHERE p.fit='strong' AND m.mv_1m<=-12 AND (m.price IS NULL OR m.price>=0.10)
-        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC LIMIT 12""")
-    section("Pullbacks - strong-fit names down recently",
-            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), f"1m {r.mv_1m or 0:+.0f}%",
-              f"3m {r.mv_3m or 0:+.0f}%", "dip in uptrend" if (r.mv_3m or 0)>0 else "downtrend")
+        WHERE p.fit='strong' AND m.mv_1m<=-6 AND (m.price IS NULL OR m.price>=0.10)
+        GROUP BY p.yf_ticker ORDER BY MAX(p.market_cap) DESC LIMIT 16""")
+    section("Pullbacks - strong-fit names down recently (largest first, buying window)",
+            [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap),
+              f"1m {r.mv_1m or 0:+.0f}%", f"6m {r.mv_6m or 0:+.0f}%",
+              "dip in uptrend" if (r.mv_6m or 0) > 0 else "weak trend")
              for r in cur.fetchall()])
 
+    # 5. Very early
     dbex(cur, """SELECT p.yf_ticker, MIN(p.sector) sector, MAX(p.market_cap) market_cap, MAX(p.matched) matched
         FROM tbl_eb_pool p LEFT JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
         WHERE p.fit='strong' AND p.market_cap BETWEEN 30000000 AND 1500000000
@@ -224,7 +232,8 @@ def email_brief(conn):
     section("Very early - strong-fit small-caps not yet moved (scattershot)",
             [(tlink(r.yf_ticker), (r.sector or '')[:18], _cap(r.market_cap), r.matched) for r in cur.fetchall()])
 
-    dbex(cur, """SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, sentiment, LEFT(title,60) ttl,
+    # 6. Trump positive mentions
+    dbex(cur, """SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, LEFT(title,60) ttl,
           (SELECT MAX(fit) FROM tbl_eb_pool p WHERE p.yf_ticker=matched_ticker) fit,
           CASE WHEN title ILIKE '%bought%' OR title ILIKE '%stake%' OR title ILIKE '%disclos%'
                     OR title ILIKE '%invest%' OR title ILIKE '%acquir%' THEN 'BUY' ELSE 'say' END tag
@@ -232,18 +241,22 @@ def email_brief(conn):
           AND published>=(now()-interval '3 days')
         ORDER BY matched_ticker, published DESC""")
     rows = cur.fetchall()
-    section("Trump positive mentions (BUY=position, say=praise)",
-            [(_Raw(("★ " if r.fit=="strong" else "") + tlink(r.matched_ticker, r.matched_name or r.matched_ticker)), r.tag, r.ttl) for r in rows])
+    section("Trump positive mentions (BUY = he took a position, say = praise)",
+            [(_Raw(("★ " if r.fit == "strong" else "") + tlink(r.matched_ticker, r.matched_name or r.matched_ticker)),
+              r.tag, r.ttl) for r in rows])
 
+    # 7. Trump policy beneficiaries
     dbex(cur, """SELECT DISTINCT ticker, theme, is_holding FROM tbl_eb_policy_signal
         WHERE published>=(now()-interval '5 days') ORDER BY is_holding DESC, theme, ticker""")
     section("Trump policy -> beneficiaries",
-            [(_Raw(("★ " if r.is_holding else "") + tlink(r.ticker)), r.theme, "he owns it" if r.is_holding else "") for r in cur.fetchall()])
+            [(_Raw(("★ " if r.is_holding else "") + tlink(r.ticker)), r.theme,
+              "he owns it" if r.is_holding else "") for r in cur.fetchall()])
 
     if not blocks:
         return False
     body = ("<div style=\"font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a\">"
-            "<p>EarlyBird morning brief - the engine detects + ranks; you judge merit. (★ = strong-fit / he owns it)</p>"
+            "<p>EarlyBird daily brief. Ordered by signal strength: Wave turns, then conviction-fund convergence, "
+            "then catalyst-backed movers, then pullbacks, then early. ★ = strong-fit / Trump owns it.</p>"
             + "".join(blocks) + "</div>")
     return send_alert("EarlyBird Daily Brief", body)
 
