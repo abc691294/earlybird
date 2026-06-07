@@ -14,9 +14,12 @@ from eb_db import get_conn, dbex
 HDR = {"User-Agent": "EarlyBird Research research@example.com"}
 FUNDS = {"2038540": "Situational Awareness Partners LP", "2045724": "Situational Awareness LP",
          "1088875": "Baillie Gifford", "1697748": "ARK Invest",
-         "1135730": "Coatue", "1387322": "Whale Rock"}
+         "1135730": "Coatue", "1387322": "Whale Rock",
+         "1045810": "NVIDIA"}
 # conviction ACTIVE managers only. Deliberately NOT the passive index giants
 # (Vanguard/BlackRock/State Street) - they hold everything by mandate, zero signal.
+# NVIDIA strategic stakes = the single highest-signal map of where AI capex is flowing
+# (they fund their own customers and lock in their suppliers). Strategic-intent signal.
 
 DDL = """
 IF OBJECT_ID('tbl_eb_sa_13f','U') IS NULL
