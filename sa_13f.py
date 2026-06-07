@@ -56,23 +56,32 @@ def holdings_for(cik, acc):
     return []
 
 
-def load(conn):
+def load(conn, quarters=2):
+    """Pull the latest N quarterly 13F filings per fund into tbl_eb_sa_13f.
+    Default 2 (regular weekly run). Pass quarters=12+ to backfill 3y of history."""
     cur = conn.cursor()
     for cik, fund in FUNDS.items():
         sub = json.loads(get(f"https://data.sec.gov/submissions/CIK{int(cik):010d}.json"))
         rec = sub["filings"]["recent"]
         got = 0
         for i, form in enumerate(rec["form"]):
-            if not form.startswith("13F-HR") or got >= 2:
+            if not form.startswith("13F-HR") or got >= quarters:
                 continue
             acc = rec["accessionNumber"][i].replace("-", "")
             period, filed = rec["reportDate"][i], rec["filingDate"][i]
+            # skip if already fully loaded (cheap completeness check)
+            dbex(cur, "SELECT COUNT(*) c FROM tbl_eb_sa_13f WHERE cik=%s AND period=%s", cik, period)
+            n_existing = cur.fetchone().c
+            if n_existing > 0:
+                got += 1; continue
             for nm, cu, v, sh in holdings_for(cik, acc):
                 dbex(cur, """INSERT INTO tbl_eb_sa_13f (cik,fund,period,filed,name,cusip,value,shares)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (cik,period,name,cusip) DO NOTHING""",
                     cik, fund, period, filed, nm, (cu or ''), v, sh)
-            got += 1; conn.commit(); time.sleep(0.2)
-    print("loaded 13F holdings")
+            got += 1; conn.commit()
+            print(f"  {fund:34} {period}: loaded")
+            time.sleep(0.3)            # be polite to EDGAR
+    print(f"13F load complete (target {quarters} quarters/fund)")
 
 
 def _isin_check(body):
@@ -192,6 +201,10 @@ if __name__ == "__main__":
     c = get_conn()
     if len(sys.argv) > 1 and sys.argv[1] == "holders":
         holders(c, sys.argv[2])
+    elif len(sys.argv) > 1 and sys.argv[1] == "backfill":
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else 12
+        print(f"backfilling last {n} quarters per fund...")
+        load(c, quarters=n)
     else:
         load(c); comparable(c, "2045724")
     c.close()
