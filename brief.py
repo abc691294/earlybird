@@ -44,6 +44,13 @@ def _linktag(sym):
             f'style="color:#1558d6;text-decoration:none">[link]</a>')
 
 
+def _alink(url):
+    """[link] anchor for a news article URL ('' if none)."""
+    if not url:
+        return ""
+    return f' <a href="{html.escape(url, quote=True)}" style="color:#1558d6;text-decoration:none">[link]</a>'
+
+
 def _first_sentence(text, fallback="No plain description available."):
     if not text:
         return fallback
@@ -67,14 +74,15 @@ def _fetch_candidates(conn):
         FROM tbl_eb_pool WHERE fit='strong' GROUP BY yf_ticker),
       cat AS (
         SELECT yf_ticker, MAX(published) last_pub,
-               (ARRAY_AGG(title ORDER BY published DESC))[1] last_title
+               (ARRAY_AGG(title ORDER BY published DESC))[1] last_title,
+               (ARRAY_AGG(url ORDER BY published DESC))[1] last_url
         FROM tbl_eb_news WHERE catalyst=true AND published >= now() - interval '14 days'
         GROUP BY yf_ticker)
       SELECT g.yf_ticker, g.name, g.sector, g.matched,
              f.market_cap, f.price, f.range_pct, f.revenue_growth, f.profit_margin,
              f.total_cash, f.total_debt, f.summary,
              m.mv_1m, m.mv_3m, m.mv_6m,
-             c.last_title, c.last_pub,
+             c.last_title, c.last_pub, c.last_url,
              w.sym IS NOT NULL AS on_watchlist
       FROM pool_g g
       JOIN tbl_eb_fundamentals f ON f.yf_ticker = g.yf_ticker
@@ -86,31 +94,33 @@ def _fetch_candidates(conn):
 
 
 def _score(r, conv):
-    """Return (score, evidence-sentences). Gate: needs at least one hard reason to appear."""
+    """Return (score, evidence). Evidence items are (sentence, article-url-or-None).
+    Gate: needs at least one hard reason to appear."""
     ev, score, gated = [], 0, False
     funds = conv.get(r.yf_ticker)
     if r.last_pub is not None:
         score += 3
         gated = True
-        ev.append(f"Fresh news ({r.last_pub:%d/%m}): {_first_sentence(r.last_title, r.last_title or '')}")
+        ev.append((f"Fresh news ({r.last_pub:%d/%m}): {_first_sentence(r.last_title, r.last_title or '')}",
+                   r.last_url))
     if funds and funds[0] >= 3:
         score += 3
         gated = True
-        ev.append(f"Held by {funds[0]} of the big investment funds we track ({funds[1]}).")
+        ev.append((f"Held by {funds[0]} of the big investment funds we track ({funds[1]}).", None))
     elif funds and funds[0] == 2:
         score += 1
-        ev.append(f"Held by 2 of the big investment funds we track ({funds[1]}).")
+        ev.append((f"Held by 2 of the big investment funds we track ({funds[1]}).", None))
     if (r.mv_1m or 0) <= -10 and (r.mv_6m or 0) > 0:
         score += 2
         gated = True
-        ev.append(f"Down {abs(r.mv_1m):.0f}% this month while its 6-month trend is still up - "
-                  "the dip-in-a-rising-trend entry our testing supports.")
+        ev.append((f"Down {abs(r.mv_1m):.0f}% this month while its 6-month trend is still up - "
+                   "the dip-in-a-rising-trend entry our testing supports.", None))
     if (r.market_cap or 0) and r.market_cap < 1_500_000_000 and (r.mv_3m is None or r.mv_3m < 30):
         score += 1
-        ev.append("Still small and not yet moved - the early end of the field.")
+        ev.append(("Still small and not yet moved - the early end of the field.", None))
     if (r.revenue_growth or 0) >= 0.25:
         score += 1
-        ev.append(f"Sales growing fast ({r.revenue_growth * 100:.0f}% year on year).")
+        ev.append((f"Sales growing fast ({r.revenue_growth * 100:.0f}% year on year).", None))
     if (r.mv_3m or 0) > 500:
         return 0, []          # already flown - chasing it is not being early
     return (score if gated else 0), ev
@@ -161,8 +171,8 @@ def _card(r, ev, conv):
             f"{(r.profit_margin or 0) * 100:.0f} cents is profit); sales growth "
             f"{(r.revenue_growth or 0) * 100:.0f}% year on year; trading at "
             f"{r.range_pct or 0:.0f}% of its one-year price range (0 = at its low, 100 = at its high).")
-    for e in ev:
-        lines.append("&bull; " + html.escape(e))
+    for text, url in ev:
+        lines.append("&bull; " + html.escape(text) + _alink(url))
     return f"<p style=\"{P}\">" + "<br>".join(lines) + "</p>", verdict, because
 
 
@@ -183,21 +193,25 @@ def section_candidates(conn, conv):
         if s > 0:
             scored.append((s, r, ev))
     scored.sort(key=lambda x: -x[0])
-    top = scored[:3]
     by_sector = {}
     for _, r, _e in scored[:25]:
         by_sector.setdefault(r.sector, []).append(r)
     blocks, rec = [], None
-    for s, r, ev in top:
+    for s, r, ev in scored:
+        if len(blocks) >= 3:
+            break
+        verdict, because = _verdict(r, len(ev), conv.get(r.yf_ticker))
+        if verdict == "Pass":
+            continue          # a name we would pass on is not "worth considering"
         card_html, verdict, because = _card(r, ev, conv)
         comp = _comparison(by_sector, r)
         if comp:
             card_html = card_html.replace("</p>", f"<br><i>{html.escape(comp)}</i></p>")
         blocks.append(card_html)
         if rec is None and verdict == "Consider buying small":
-            reasons = " ".join(ev[:2]) if ev else because
-            rec = (f"I recommend {r.name or r.yf_ticker} ({r.yf_ticker}) because: {reasons} "
-                   f"It is a {'pioneer - keep the stake small' if _is_pioneer(r) else 'proven supplier'}.")
+            reasons = " ".join(t for t, _u in ev[:2]) if ev else because
+            rec = (f"{r.name or r.yf_ticker} ({r.yf_ticker}). Why: {reasons} "
+                   f"{'A pioneer - keep any stake small.' if _is_pioneer(r) else 'A proven supplier.'}")
     return blocks, rec
 
 
@@ -206,35 +220,37 @@ def section_watchlist(conn, conv):
     dbex(cur, """
       SELECT w.sym, w.name, w.sector, w.priority, w.held, w.noted, w.noted_price, w.why, w.triggers,
              f.price, m.mv_1m, m.mv_6m,
-             c.last_title, c.last_pub
+             c.last_title, c.last_pub, c.last_url
       FROM tbl_eb_watchlist w
       LEFT JOIN tbl_eb_fundamentals f ON f.yf_ticker = w.sym
       LEFT JOIN tbl_eb_moves m ON m.yf_ticker = w.sym
       LEFT JOIN (SELECT yf_ticker, MAX(published) last_pub,
-                        (ARRAY_AGG(title ORDER BY published DESC))[1] last_title
+                        (ARRAY_AGG(title ORDER BY published DESC))[1] last_title,
+                        (ARRAY_AGG(url ORDER BY published DESC))[1] last_url
                  FROM tbl_eb_news WHERE catalyst=true AND published >= now() - interval '7 days'
                  GROUP BY yf_ticker) c ON c.yf_ticker = w.sym
       WHERE w.active = true
       ORDER BY w.held DESC, CASE WHEN w.priority='high' THEN 0 ELSE 1 END, w.sym""")
     items = []
     for r in cur.fetchall():
-        signals = []
+        signals = []          # (sentence, article-url-or-None)
         if (r.mv_1m or 0) <= -10 and (r.mv_6m or 0) > 0:
-            signals.append("it is in the dip-in-a-rising-trend buying window our testing supports")
+            signals.append(("it is in the dip-in-a-rising-trend buying window our testing supports", None))
         if r.last_pub is not None:
-            signals.append(f"fresh news ({r.last_pub:%d/%m}): {_first_sentence(r.last_title, r.last_title or '')}")
+            signals.append((f"fresh news ({r.last_pub:%d/%m}): "
+                            f"{_first_sentence(r.last_title, r.last_title or '')}", r.last_url))
         if r.noted_price and r.price:
             chg = (r.price - r.noted_price) / r.noted_price * 100
             if abs(chg) >= 25:
-                signals.append(f"it has moved {chg:+.0f}% since we first noted it")
+                signals.append((f"it has moved {chg:+.0f}% since we first noted it", None))
         funds = conv.get(r.sym)
         if funds and funds[0] >= 3:
-            signals.append(f"{funds[0]} of the big funds we track now hold it")
+            signals.append((f"{funds[0]} of the big funds we track now hold it", None))
         if not signals:
             continue
         tag = " (HELD - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
         body = (f"<b>{html.escape(r.name or r.sym)} ({r.sym})</b>{tag} {_linktag(r.sym)}: "
-                + "; ".join(signals) + ".")
+                + "; ".join(html.escape(t) + _alink(u) for t, u in signals) + ".")
         # what's changed in its position - always shown for context
         pos = []
         if r.price:
@@ -247,7 +263,7 @@ def section_watchlist(conn, conv):
             pos.append(f"{r.mv_1m:+.0f}% over the past month")
         if pos:
             body += f"<br><i>Position: {html.escape(', '.join(pos))}.</i>"
-        if r.triggers and any("buying window" in s for s in signals):
+        if r.triggers and any("buying window" in t for t, _u in signals):
             body += f"<br>Our trigger notes for it: {html.escape(_first_sentence(r.triggers))}"
         items.append(f"<p style=\"{P}\">{body}</p>")
     return items
@@ -256,14 +272,15 @@ def section_watchlist(conn, conv):
 def section_trump(conn):
     cur = conn.cursor()
     dbex(cur, """
-      SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, LEFT(title, 90) t, published
+      SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, LEFT(title, 90) t,
+             published, link
       FROM tbl_eb_trump_news
       WHERE in_universe = true AND sentiment = 'positive' AND date_verified = true
         AND published >= now() - interval '7 days'
       ORDER BY matched_ticker, published DESC""")
     rows = cur.fetchall()
     return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
-            f"({r.published:%d/%m}): {html.escape(r.t or '')} {_linktag(r.matched_ticker)}</p>"
+            f"({r.published:%d/%m}): {html.escape(r.t or '')}{_alink(r.link)} {_linktag(r.matched_ticker)}</p>"
             for r in rows[:6]]
 
 
@@ -289,6 +306,9 @@ def build_and_send(conn):
 
     parts.append(f"<p style=\"{H}\">2. Worth considering this week</p>")
     if cards:
+        parts.append(f"<p style=\"{P}\"><i>Verdicts: 'Consider buying small' = worth a position "
+                     "now, kept small. 'Watch' = interesting, but wait for a clear trigger. "
+                     "Names that fail their test are left out entirely.</i></p>")
         parts.extend(cards)
     else:
         parts.append(f"<p style=\"{P}\">Nothing this week. No stock produced strong enough "
