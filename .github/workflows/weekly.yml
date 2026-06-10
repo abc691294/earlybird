@@ -13,6 +13,9 @@ jobs:
       SUPABASE_DB: ${{ secrets.SUPABASE_DB }}
       SUPABASE_USER: ${{ secrets.SUPABASE_USER }}
       SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+      GMAIL_USER: ${{ secrets.GMAIL_USER }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,3 +26,5 @@ jobs:
         run: python enrich_fundamentals.py --all
       - name: 13F holdings
         run: python sa_13f.py
+      - name: Weekly brief (the one scheduled email)
+        run: python brief.py

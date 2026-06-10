@@ -94,6 +94,27 @@ def article_date(url, timeout=8):
     return None
 
 
+def alt_source_date(title, timeout=8, max_tries=3):
+    """Freshness fallback (spec 10/06/2026): when a story's own page won't give up its
+    date, look for an ALTERNATIVE source covering the same story and verify that one.
+    Searches Google News for the headline's distinctive words (last 7 days only) and
+    returns the first verifiable publish date found, or None."""
+    base = strip_src(title)
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z'&.-]+", base) if w.lower() not in _STOP][:6]
+    if len(words) < 3:
+        return None
+    q = urllib.parse.quote(" ".join(words) + " when:7d")
+    try:
+        f = feedparser.parse(f"https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en")
+    except Exception:
+        return None
+    for e in f.entries[:max_tries]:
+        d = article_date(getattr(e, "link", "") or "", timeout)
+        if d is not None:
+            return d
+    return None
+
+
 def dbex(cur, sql, *params):
     """psycopg execute that accepts pyodbc-style positional params (wrapped to a tuple)."""
     cur.execute(sql, params if params else None)
@@ -506,21 +527,25 @@ def send_pending_alerts(conn):
     dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news
                    WHERE alerted=true AND fetched_on >= (now() - interval '3 days')""")
     cooldown = {r.matched_ticker for r in cur.fetchall()}
-    FRESH_DAYS = 3
+    FRESH_DAYS = 7   # spec 10/06/2026: nothing surfaces unless provably <= 7 days old
     now = dt.datetime.utcnow()
     seen_t, blocks, names = set(), [], []
     for h in rows:
         if h.matched_ticker in seen_t or h.matched_ticker in cooldown:
             continue
-        # verify the REAL article date (Google re-dates recycled stories); persist the
-        # correction so future runs trust it, and skip anything genuinely stale.
-        real = article_date(h.link)
-        if real is not None:
-            dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s WHERE link=%s", real, h.link)
-            conn.commit()
-            if (now - real).days > FRESH_DAYS:
-                print(f"  stale-skip {h.matched_ticker}: article dated {real:%Y-%m-%d}")
-                continue
+        # spec freshness rule: verify the REAL article date (Google re-dates recycled
+        # stories). If the article won't give up its date, try an ALTERNATIVE source for
+        # the same story. If nothing can be verified, the story is binned, not guessed.
+        real = article_date(h.link) or alt_source_date(h.title)
+        if real is None:
+            print(f"  unverified-bin {h.matched_ticker}: no provable date for '{(h.title or '')[:48]}'")
+            continue
+        dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s, date_verified=true WHERE link=%s",
+             real, h.link)
+        conn.commit()
+        if (now - real).days > FRESH_DAYS:
+            print(f"  stale-skip {h.matched_ticker}: article dated {real:%Y-%m-%d}")
+            continue
         seen_t.add(h.matched_ticker)
         c2 = conn.cursor()
         dbex(c2, "SELECT 1 FROM tbl_eb_pool WHERE yf_ticker=%s AND fit='strong'", h.matched_ticker)
@@ -545,6 +570,34 @@ def send_pending_alerts(conn):
     dbex(cur, f"UPDATE tbl_eb_trump_news SET alerted=true WHERE {where}")
     conn.commit()
     return sorted(seen_t)
+
+
+def verify_recent(conn, limit=12):
+    """Verify publish dates for recent positive mentions so the weekly brief can show
+    only provably fresh items (date_verified=true). First-hand sources (White House,
+    Truth Social, our own per-ticker news feeds) are trusted as-is; Google News items
+    must prove their date - directly or via an alternative source - or stay unverified
+    (and therefore never surface)."""
+    cur = conn.cursor()
+    dbex(cur, """UPDATE tbl_eb_trump_news SET date_verified=true
+                 WHERE date_verified=false AND source IN ('wh','truth','pool')""")
+    conn.commit()
+    dbex(cur, """SELECT id, title, link FROM tbl_eb_trump_news
+                 WHERE source='google' AND date_verified=false AND in_universe=true
+                   AND sentiment='positive' AND published >= now() - interval '7 days'
+                 ORDER BY published DESC LIMIT %s""", limit)
+    rows = cur.fetchall()
+    n_ok = 0
+    for r in rows:
+        real = article_date(r.link) or alt_source_date(r.title)
+        if real is None:
+            continue
+        dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s, date_verified=true WHERE id=%s",
+             real, r.id)
+        n_ok += 1
+    conn.commit()
+    if rows:
+        print(f"  date-verified {n_ok}/{len(rows)} recent google items")
 
 
 def main():
@@ -614,6 +667,7 @@ def main():
                    FROM tbl_eb_trump_news""")
     row = cur.fetchone()
     print(f"trump_news: +{ins} this run | {row.n} total, {row.pos} positive & mapped")
+    verify_recent(conn)
     alerted = send_pending_alerts(conn)
     if alerted:
         print(f"  ALERT emailed: {', '.join(alerted)}")
