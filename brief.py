@@ -26,8 +26,8 @@ from eb_db import get_conn, dbex
 from trump_news import send_alert
 from converge import cross_fund_convergence
 
-P = "margin:0 0 10px;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.5;color:#1a1a1a"
-H = "margin:24px 0 8px;font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:700;color:#1a1a1a"
+P = "margin:0 0 8px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;line-height:1.45;color:#1a1a1a"
+H = "margin:18px 0 6px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;font-weight:700;color:#1a1a1a"
 
 
 def _money(v):
@@ -38,9 +38,10 @@ def _money(v):
     return f"${v / 1e6:.0f} million"
 
 
-def _link(sym, label=None):
+def _linktag(sym):
+    """A compact [link] anchor - the email never shows a raw URL."""
     return (f'<a href="https://finance.yahoo.com/quote/{sym}" '
-            f'style="color:#1558d6;text-decoration:none">{html.escape(str(label or sym))}</a>')
+            f'style="color:#1558d6;text-decoration:none">[link]</a>')
 
 
 def _first_sentence(text, fallback="No plain description available."):
@@ -140,8 +141,9 @@ def _card(r, ev, conv):
     kind = "Pioneer" if _is_pioneer(r) else "Proven supplier"
     verdict, because = _verdict(r, len(ev), funds)
     lines = [
-        f"<b>{_link(r.yf_ticker, f'{r.name or r.yf_ticker} ({r.yf_ticker})')}</b> - {kind}, "
-        f"company size {_money(r.market_cap)}.",
+        f"<b>{html.escape(r.name or r.yf_ticker)} ({r.yf_ticker}) - {verdict.upper()}</b> "
+        f"{_linktag(r.yf_ticker)}<br>{html.escape(because[0].upper() + because[1:])}.",
+        f"{kind}, company size {_money(r.market_cap)}.",
         f"<b>What they do:</b> {html.escape(_first_sentence(r.summary))}",
         f"<b>Where they sit:</b> {html.escape(r.sector or 'unclassified')} - flagged by our screen "
         f"for '{html.escape(r.matched or 'theme match')}'.",
@@ -160,8 +162,7 @@ def _card(r, ev, conv):
             f"{(r.revenue_growth or 0) * 100:.0f}% year on year; trading at "
             f"{r.range_pct or 0:.0f}% of its one-year price range (0 = at its low, 100 = at its high).")
     for e in ev:
-        lines.append("&bull; " + html.escape(e) if not e.startswith("Fresh news") else "&bull; " + html.escape(e))
-    lines.append(f"<b>Verdict: {verdict}</b> - {html.escape(because)}.")
+        lines.append("&bull; " + html.escape(e))
     return f"<p style=\"{P}\">" + "<br>".join(lines) + "</p>", verdict, because
 
 
@@ -203,7 +204,7 @@ def section_candidates(conn, conv):
 def section_watchlist(conn, conv):
     cur = conn.cursor()
     dbex(cur, """
-      SELECT w.sym, w.name, w.sector, w.priority, w.held, w.noted_price, w.why, w.triggers,
+      SELECT w.sym, w.name, w.sector, w.priority, w.held, w.noted, w.noted_price, w.why, w.triggers,
              f.price, m.mv_1m, m.mv_6m,
              c.last_title, c.last_pub
       FROM tbl_eb_watchlist w
@@ -232,9 +233,22 @@ def section_watchlist(conn, conv):
         if not signals:
             continue
         tag = " (HELD - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
-        body = f"<b>{_link(r.sym, f'{r.name or r.sym} ({r.sym})')}</b>{tag}: " + "; ".join(signals) + "."
+        body = (f"<b>{html.escape(r.name or r.sym)} ({r.sym})</b>{tag} {_linktag(r.sym)}: "
+                + "; ".join(signals) + ".")
+        # what's changed in its position - always shown for context
+        pos = []
+        if r.price:
+            pos.append(f"now ${r.price:,.2f}")
+        if r.price and r.noted_price:
+            chg = (r.price - r.noted_price) / r.noted_price * 100
+            since = f" since we noted it on {r.noted:%d/%m/%Y}" if r.noted else " since we noted it"
+            pos.append(f"{chg:+.0f}%{since}")
+        if r.mv_1m is not None:
+            pos.append(f"{r.mv_1m:+.0f}% over the past month")
+        if pos:
+            body += f"<br><i>Position: {html.escape(', '.join(pos))}.</i>"
         if r.triggers and any("buying window" in s for s in signals):
-            body += f" Our trigger notes for it: {html.escape(_first_sentence(r.triggers))}"
+            body += f"<br>Our trigger notes for it: {html.escape(_first_sentence(r.triggers))}"
         items.append(f"<p style=\"{P}\">{body}</p>")
     return items
 
@@ -248,8 +262,9 @@ def section_trump(conn):
         AND published >= now() - interval '7 days'
       ORDER BY matched_ticker, published DESC""")
     rows = cur.fetchall()
-    return [f"<p style=\"{P}\">{_link(r.matched_ticker, f'{r.matched_name or r.matched_ticker}')} "
-            f"({r.published:%d/%m}): {html.escape(r.t or '')}</p>" for r in rows[:6]]
+    return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
+            f"({r.published:%d/%m}): {html.escape(r.t or '')} {_linktag(r.matched_ticker)}</p>"
+            for r in rows[:6]]
 
 
 def build_and_send(conn):
@@ -266,19 +281,19 @@ def build_and_send(conn):
 
     today = dt.date.today().strftime("%d/%m/%Y")
     parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}. Three parts, same every week: "
-             "ideas worth considering, a recommendation if one earns it, and anything we hold "
+             "the recommendation, ideas worth considering, and anything we hold "
              "or watch that needs attention.</p>"]
 
-    parts.append(f"<p style=\"{H}\">1. Worth considering this week</p>")
+    parts.append(f"<p style=\"{H}\">1. Recommendation</p>")
+    parts.append(f"<p style=\"{P}\">{html.escape(rec) if rec else 'Nothing earns a recommendation this week.'}</p>")
+
+    parts.append(f"<p style=\"{H}\">2. Worth considering this week</p>")
     if cards:
         parts.extend(cards)
     else:
         parts.append(f"<p style=\"{P}\">Nothing this week. No stock produced strong enough "
                      "evidence to earn a card, so none is shown. That is the system working, "
                      "not failing.</p>")
-
-    parts.append(f"<p style=\"{H}\">2. Recommendation</p>")
-    parts.append(f"<p style=\"{P}\">{html.escape(rec) if rec else 'Nothing earns a recommendation this week.'}</p>")
 
     parts.append(f"<p style=\"{H}\">3. Holdings and watchlist</p>")
     if watch:

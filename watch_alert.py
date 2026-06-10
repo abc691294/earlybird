@@ -15,7 +15,7 @@ from trump_news import send_alert
 from wave_dips import live_buy, WEEKLY_RECENT_BARS, DAILY_RECENT_BARS
 
 COOLDOWN_DAYS = 7
-P = "margin:0 0 10px;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.5;color:#1a1a1a"
+P = "margin:0 0 8px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;line-height:1.45;color:#1a1a1a"
 
 
 def _uptrend(daily_df):
