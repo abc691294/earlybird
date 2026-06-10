@@ -19,10 +19,9 @@ from eb_db import get_conn, dbex
 
 HIGH_PRIORITY = {"BBAI", "CBRS"}
 # names with real money in them (update as positions change)
-HELD = {"ALMU", "AXTI", "IQE.L", "BURU", "ONDS", "MOB"}
-#   ALMU Aeluma, AXTI AXT, IQE.L IQE, BURU Nuburu, ONDS Ondas, MOB Mobilicom.
-#   Xanadu (XNDU) deliberately NOT here - see note in HANDOVER; confirm it is the
-#   right listing before tracking, as Xanadu Quantum is a private company.
+HELD = {"ALMU", "AXTI", "IQE.L", "BURU", "ONDS", "MOB", "XNDU"}
+#   ALMU Aeluma, AXTI AXT, IQE.L IQE, BURU Nuburu, ONDS Ondas, MOB Mobilicom,
+#   XNDU Xanadu Quantum Technologies (now listed, ~$13, confirmed by company summary).
 
 UPSERT = """
 INSERT INTO tbl_eb_watchlist (sym, name, sector, priority, held, noted, noted_price,
