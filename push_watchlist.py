@@ -18,7 +18,11 @@ from pathlib import Path
 from eb_db import get_conn, dbex
 
 HIGH_PRIORITY = {"BBAI", "CBRS"}
-HELD = {"ALMU"}          # names with real money in them (update as positions change)
+# names with real money in them (update as positions change)
+HELD = {"ALMU", "AXTI", "IQE.L", "BURU", "ONDS", "MOB"}
+#   ALMU Aeluma, AXTI AXT, IQE.L IQE, BURU Nuburu, ONDS Ondas, MOB Mobilicom.
+#   Xanadu (XNDU) deliberately NOT here - see note in HANDOVER; confirm it is the
+#   right listing before tracking, as Xanadu Quantum is a private company.
 
 UPSERT = """
 INSERT INTO tbl_eb_watchlist (sym, name, sector, priority, held, noted, noted_price,
