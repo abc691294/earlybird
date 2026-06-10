@@ -21,6 +21,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
+      - name: Retry rate-limited fundamentals (heals the backlog a chunk at a time)
+        run: python reenrich.py failed 400
       - name: Pool refresh (screen)
         run: python pool.py
       - name: Sector RSS

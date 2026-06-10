@@ -25,7 +25,7 @@ jobs:
       - name: Enrich fundamentals (~1hr)
         run: python enrich_fundamentals.py --all
       - name: Repair watchlist/held names (paced, beats the bulk rate-limit)
-        run: python reenrich_watchlist.py
+        run: python reenrich.py watchlist
       - name: 13F holdings
         run: python sa_13f.py
       - name: Weekly brief (the one scheduled email)
