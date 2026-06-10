@@ -131,6 +131,38 @@ def run_failed(conn, n):
     return _process(conn, syms, "failed-backlog")
 
 
+def _recoverable_count(cur):
+    cur.execute("""SELECT COUNT(*) c FROM tbl_eb_universe u
+                   JOIN tbl_eb_fundamentals f ON f.yf_ticker = u.yf_ticker
+                   WHERE u.active AND f.fetch_ok IS NOT TRUE
+                     AND (f.fetch_note ILIKE '%%rate limit%%' OR f.fetch_note ILIKE '%%too many%%')""")
+    return cur.fetchone().c
+
+
+def run_drain(conn, chunk=1500, max_passes=40):
+    """Work the WHOLE recoverable backlog in one long run: keep retrying the rate-limit
+    failures (the ~9000) until none remain. A throttled pass (0 healed) pauses then retries;
+    progress passes continue immediately. Stops when the recoverable count hits zero or no
+    progress can be made (remaining names are dead/unresolvable, not throttled)."""
+    cur = conn.cursor()
+    for p in range(1, max_passes + 1):
+        remaining = _recoverable_count(cur)
+        print(f"[pass {p}] recoverable rate-limit backlog: {remaining}", flush=True)
+        if remaining == 0:
+            print("drain complete - no recoverable rate-limit failures left", flush=True)
+            return
+        ok, done = run_failed(conn, min(chunk, remaining))
+        if ok == 0:
+            print("  no progress this pass (throttled or remaining unresolvable); pausing 60s", flush=True)
+            time.sleep(60)
+            if _recoverable_count(cur) == remaining and done > 0:
+                # a full chunk of 'rate-limit' names returned nothing real -> they are no
+                # longer recoverable; stop rather than loop forever
+                print("  remaining names no longer resolve; stopping drain", flush=True)
+                return
+    print("drain hit max passes; re-run 'drain' to continue", flush=True)
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "watchlist"
     conn = get_conn()
@@ -139,8 +171,10 @@ def main():
     elif mode == "failed":
         n = int(sys.argv[2]) if len(sys.argv) > 2 else CHUNK_DEFAULT
         run_failed(conn, n)
+    elif mode == "drain":
+        run_drain(conn)
     else:
-        print(f"unknown mode '{mode}' - use 'watchlist' or 'failed [N]'")
+        print(f"unknown mode '{mode}' - use 'watchlist', 'failed [N]' or 'drain'")
     conn.close()
 
 
