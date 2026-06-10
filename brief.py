@@ -151,7 +151,7 @@ def _card(r, ev, conv):
     kind = "Pioneer" if _is_pioneer(r) else "Proven supplier"
     verdict, because = _verdict(r, len(ev), funds)
     lines = [
-        f"<b>{html.escape(r.name or r.yf_ticker)} ({r.yf_ticker}) - {verdict.upper()}</b> "
+        f"<b>{html.escape(r.name or r.yf_ticker)} ({r.yf_ticker}) - {verdict}</b> "
         f"{_linktag(r.yf_ticker)}<br>{html.escape(because[0].upper() + because[1:])}.",
         f"{kind}, company size {_money(r.market_cap)}.",
         f"<b>What they do:</b> {html.escape(_first_sentence(r.summary))}",
@@ -248,7 +248,7 @@ def section_watchlist(conn, conv):
             signals.append((f"{funds[0]} of the big funds we track now hold it", None))
         if not signals:
             continue
-        tag = " (HELD - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
+        tag = " (held - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
         body = (f"<b>{html.escape(r.name or r.sym)} ({r.sym})</b>{tag} {_linktag(r.sym)}: "
                 + "; ".join(html.escape(t) + _alink(u) for t, u in signals) + ".")
         # what's changed in its position - always shown for context
