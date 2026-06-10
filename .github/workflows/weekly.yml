@@ -24,6 +24,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Enrich fundamentals (~1hr)
         run: python enrich_fundamentals.py --all
+      - name: Repair watchlist/held names (paced, beats the bulk rate-limit)
+        run: python reenrich_watchlist.py
       - name: 13F holdings
         run: python sa_13f.py
       - name: Weekly brief (the one scheduled email)
