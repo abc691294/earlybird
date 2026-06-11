@@ -31,10 +31,8 @@ jobs:
         run: python news_scrape.py
       - name: Move detector
         run: python move_scan.py
-      - name: Trump scan
-        run: python trump_news.py
-      - name: Industry-figure mention scan (Huang, hyperscaler CEOs, Altman, Su)
-        run: python mention_news.py
+      - name: Stock pumps scan (Trump + Huang + hyperscaler CEOs + Altman + Su)
+        run: python stock_pumps.py
       - name: Engine-room digest (log only, no email)
         run: python suggest.py
       - name: Watchlist buying-moment alert (emails only when a watched name triggers)

@@ -2,13 +2,13 @@
 
 The EarlyBird research engine, running entirely in the cloud: **Supabase Postgres** for
 data + **GitHub Actions** cron for compute. No local machine required - it runs 24/7,
-which matters most for the hourly Trump alerts (catalysts break overnight/at weekends).
+which matters most for the hourly stock-pumps scan (catalysts break overnight/at weekends).
 
 ## Schedules
 | Workflow | Cron | Does |
 |---|---|---|
-| **Trump Hourly Scan** | `0 * * * *` | `trump_news.py` - holdings + posts + White House/Truth Social + policy beneficiaries + Wave grading + email alerts |
-| **Daily Refresh** | `0 22 * * *` | pool refresh → sector RSS → ticker news → move detector → trump scan → digest |
+| **Stock Pumps Hourly Scan** | `0 * * * *` | `stock_pumps.py` - Trump (holdings, Truth Social, White House, policy beneficiaries) PLUS Huang, hyperscaler CEOs, Altman, Su - all graded + email alerts |
+| **Daily Refresh** | `0 22 * * *` | pool refresh → sector RSS → ticker news → move detector → stock-pumps scan → digest |
 | **Weekly Refresh** | `0 6 * * 0` | enrich fundamentals (~1hr) → 13F holdings |
 
 ## Architecture
@@ -27,7 +27,7 @@ which matters most for the hourly Trump alerts (catalysts break overnight/at wee
 `GMAIL_RECIPIENT` (optional - defaults to `GMAIL_USER`).
 
 ## Scripts
-`trump_news` · `pool` (+`functions.sql`) · `sector_news` · `news_scrape` · `move_scan` ·
+`stock_pumps` · `pool` (+`functions.sql`) · `sector_news` · `news_scrape` · `move_scan` ·
 `suggest` · `enrich_fundamentals` · `sa_13f`. Each ported from the original SQL Server
 build to Postgres (MERGE→ON CONFLICT, `dbex`, dialect) and verified against Supabase.
 
@@ -38,5 +38,5 @@ gitignored `secrets.json`, then run any script directly.
 ## Notes
 - `build_universe.py` (T212 instrument universe) stays local - it needs the T212 source;
   the universe is otherwise static in Supabase.
-- The daily digest prints to the workflow log; wire it to email (like the Trump alert)
+- The daily digest prints to the workflow log; wire it to email (like the stock-pumps alert)
   if you want it delivered.

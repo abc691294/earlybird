@@ -13,7 +13,7 @@ The signal uses the MOST RECENT cross either way, so a buy that has rolled over 
 import html
 import yfinance as yf
 from eb_db import get_conn
-from trump_news import send_alert
+from stock_pumps import send_alert
 
 MIN_CAP = 5_000_000_000     # big pool names only
 MONTHLY_RECENT_BARS = 2     # monthly buy must have JUST turned (this/last month) - senior signal

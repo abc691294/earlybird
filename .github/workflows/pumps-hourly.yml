@@ -1,4 +1,4 @@
-name: Trump Hourly Scan
+name: Stock Pumps Hourly Scan
 on:
   schedule:
     - cron: '0 * * * *'        # every hour, 24/7 (UTC)
@@ -12,7 +12,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - name: Run Trump scan
+      - name: Run stock-pumps scan
         env:
           SUPABASE_HOST: ${{ secrets.SUPABASE_HOST }}
           SUPABASE_PORT: ${{ secrets.SUPABASE_PORT }}
@@ -22,4 +22,4 @@ jobs:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
-        run: python trump_news.py
+        run: python stock_pumps.py

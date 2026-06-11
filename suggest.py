@@ -93,12 +93,12 @@ def digest(conn):
     for r in cur.fetchall():
         print(f"  {r.yf_ticker:8} {(r.sector or '')[:15]:15} matched '{r.matched}' 3m{r.mv_3m or 0:>+5.0f}%  -> re-check sector/tier")
 
-    print("\n=== 8. TRUMP POSITIVE MENTIONS - established names Trump praised (last 3d; * = strong-fit) ===")
+    print("\n=== 8. STOCK PUMPS - established names a market-moving figure backed (last 3d; * = strong-fit) ===")
     dbex(cur, """
       WITH ranked AS (
         SELECT t.matched_ticker, t.source, LEFT(t.title,56) ttl, t.published,
           ROW_NUMBER() OVER (PARTITION BY t.matched_ticker ORDER BY t.published DESC) rn
-        FROM tbl_eb_trump_news t
+        FROM tbl_eb_pump_news t
         WHERE t.in_universe=true AND t.sentiment='positive' AND t.published >= (now() - interval '3 days'))
       SELECT r.matched_ticker, r.source, r.ttl,
         (SELECT MAX(p.fit) FROM tbl_eb_pool p WHERE p.yf_ticker=r.matched_ticker) fit,
@@ -119,7 +119,7 @@ def digest(conn):
         cap = f"{r.cap/1e9:.0f}B" if r.cap and r.cap >= 1e9 else (f"{(r.cap or 0)/1e6:.0f}M" if r.cap else "  -")
         print(f"  {star}{r.matched_ticker:7} {cap:>5} [{tag}] {r.ttl}")
 
-    print("\n=== 9. TRUMP POLICY -> BENEFICIARIES (sector movers from his trade actions; ! = he owns it) ===")
+    print("\n=== 9. POLICY -> BENEFICIARIES (sector movers from Trump trade actions; ! = he owns it) ===")
     dbex(cur, """
       SELECT DISTINCT s.theme, s.ticker, s.is_holding, LEFT(s.policy_title,46) t
       FROM tbl_eb_policy_signal s

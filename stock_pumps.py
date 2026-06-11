@@ -1,20 +1,25 @@
 """
-trump_news.py - daily scan for ESTABLISHED stocks Trump has spoken POSITIVELY about.
+stock_pumps.py - daily scan for ESTABLISHED stocks that market-moving FIGURES have spoken
+POSITIVELY about ("stock pumps"). Trump is ONE such figure; the others are Jensen Huang /
+Nvidia, the hyperscaler CEOs (Nadella, Pichai, Jassy, Zuckerberg), Sam Altman and Lisa Su.
+
+When one of these figures praises a company, takes a stake, or strikes a partnership, the
+named stock tends to move that day - often before it reaches the wider feed. We catch it.
 
 Intent (per spec):
-  - Capture ANY company Trump mentions (not limited to our universe), but...
+  - Capture ANY company a tracked figure mentions (not limited to our universe), but...
   - ...focus on ESTABLISHED players (large caps), which is what the Wave sweep targets, and
-  - ...keep only POSITIVE sentiment (Trump praising / a favourable Trump-driven move),
-    not attacks/criticism.
+  - ...keep only POSITIVE sentiment (praise / backing / a favourable move), not attacks.
 
-Two free sources (no paid API; Truth Social has no free API so this is press-derived):
-  A) DISCOVERY - Google News RSS (Trump + markets). Mapped to a company by explicit
-     ticker OR by an established-company NAME (name matching is cap-gated to large caps
-     so it stays clean - small obscure tickers with common-word names are excluded).
-  B) PRECISION - Trump mentions inside the per-ticker news we already collect (tbl_eb_news).
+Sources:
+  A) DISCOVERY - Google News RSS per figure. Mapped to a company by explicit ticker, by a
+     cap-gated established-company NAME, or (for the figures) by a curated alias map.
+  B) TRUMP-SPECIFIC PRIMARY - White House actions + Truth Social (read at source = early),
+     plus the policy->beneficiary layer (a tariff/trade action that moves a whole sector).
 
-Sentiment is classified from the headline; only 'positive' rows surface in the digest.
-Stored in tbl_eb_trump_news (with a sentiment column), deduped. Run daily.
+Sentiment is classified from the headline; only 'positive' rows surface in the brief, and
+only if the true publish date is verified and <= 7 days old. Stored in tbl_eb_pump_news
+(with a `figure` column saying which pumper), deduped. Run daily.
 """
 import os, re, json, ssl, smtplib, html, datetime as dt
 import urllib.request, urllib.parse
@@ -198,9 +203,79 @@ EST_CAP = 50_000_000_000  # name-based matching only for MEGA caps >= $50B (famo
 # distinctive names - Boeing/Dell/Apple/IBM/Caterpillar). Below this, name tokens
 # (clean/china/brady) collide with unrelated headlines, so require an explicit ticker.
 
+# ============================================================================
+# THE PUMPERS - market-moving figures beyond Trump. Each: a regex that must appear in the
+# headline (the figure or their company), and the people who drive the Google feeds.
+# ============================================================================
+FIGURES = {
+    "trump":   r"\bTrump\b",
+    "huang":   r"\b(Jensen Huang|Nvidia|NVIDIA)\b",
+    "nadella": r"\b(Satya Nadella|Nadella)\b",
+    "pichai":  r"\b(Sundar Pichai|Pichai)\b",
+    "jassy":   r"\b(Andy Jassy|Jassy)\b",
+    "zuck":    r"\b(Mark Zuckerberg|Zuckerberg)\b",
+    "altman":  r"\b(Sam Altman|Altman)\b",
+    "su":      r"\b(Lisa Su)\b",
+}
+_FIGURE_RX = {k: re.compile(v) for k, v in FIGURES.items()}
+# the people whose names drive the discovery feeds (Trump has his own GNEWS + primary sources)
+PEOPLE = ["Jensen Huang", "Satya Nadella", "Sundar Pichai", "Andy Jassy",
+          "Mark Zuckerberg", "Sam Altman", "Lisa Su"]
+# each figure's own company - we want who they BACK, not a headline that's merely about them
+OWN_TICKER = {"huang": "NVDA", "nadella": "MSFT", "pichai": "GOOGL", "jassy": "AMZN",
+              "zuck": "META", "altman": None, "su": "AMD", "trump": None}
+
+
+def which_figure(title):
+    for k, rx in _FIGURE_RX.items():
+        if rx.search(title or ""):
+            return k
+    return None
+
+
+def figure_feeds(person):
+    """Google News RSS for one pumper - praise + partnership/investment patterns."""
+    q = person.replace(" ", "%20")
+    return [
+        f"https://news.google.com/rss/search?q={q}%20(praises%20OR%20touts%20OR%20backs%20OR%20partners%20OR%20partnership)%20when:5d&hl=en-US&gl=US&ceid=US:en",
+        f"https://news.google.com/rss/search?q={q}%20(invests%20OR%20stake%20OR%20deal%20OR%20supply%20OR%20%22to%20buy%22)%20(stock%20OR%20shares%20OR%20company)%20when:6d&hl=en-US&gl=US&ceid=US:en",
+    ]
+
+# Curated aliases for the big tech names the figures actually discuss. The cap-gated token
+# map drops common words (meta/amazon/apple); here the headlines are clean ("X praises Meta")
+# so a tight explicit map is safe. An endorsement verb must sit within 40 chars of the name.
+_ALIASES = {
+    r"\bMeta\b": ("META", "Meta Platforms"), r"\bMicrosoft\b": ("MSFT", "Microsoft"),
+    r"\bAmazon\b": ("AMZN", "Amazon"), r"\b(?:Google|Alphabet)\b": ("GOOGL", "Alphabet"),
+    r"\bApple\b": ("AAPL", "Apple"), r"\bBroadcom\b": ("AVGO", "Broadcom"),
+    r"\bMarvell\b": ("MRVL", "Marvell"), r"\bMicron\b": ("MU", "Micron"),
+    r"\bCorning\b": ("GLW", "Corning"), r"\bCoreWeave\b": ("CRWV", "CoreWeave"),
+    r"\bOracle\b": ("ORCL", "Oracle"), r"\bPalantir\b": ("PLTR", "Palantir"),
+    r"\bTSMC\b": ("TSM", "TSMC"), r"\bIntel\b": ("INTC", "Intel"),
+    r"\bDell\b": ("DELL", "Dell"), r"\bSuper\s?Micro\b": ("SMCI", "Super Micro"),
+}
+_ALIAS_RX = [(re.compile(p, re.I), tk, nm) for p, (tk, nm) in _ALIASES.items()]
+_ENDORSE = re.compile(
+    r"\b(prais\w*|tout\w*|hail\w*|back(?:s|ed|ing)|endors\w*|partner\w*|invest\w*|stake|"
+    r"deal|supply|buys?|bought|acquir\w*|loves?|picks?|chose|selects?)\b", re.I)
+
+
+def alias_match(title, figure_key):
+    """Map a clean 'figure backs Company' headline to a ticker, with an endorsement verb near
+    the company name (kills wealth-ranking / comparison noise), skipping the figure's own co."""
+    own = OWN_TICKER.get(figure_key)
+    low = title or ""
+    for rx, tk, nm in _ALIAS_RX:
+        if tk == own:
+            continue
+        m = rx.search(low)
+        if m and _ENDORSE.search(low[max(0, m.start() - 40): m.end() + 40]):
+            return tk, nm
+    return None, None
+
 DDL = """
-IF OBJECT_ID('tbl_eb_trump_news','U') IS NULL
-CREATE TABLE tbl_eb_trump_news (
+IF OBJECT_ID('tbl_eb_pump_news','U') IS NULL
+CREATE TABLE tbl_eb_pump_news (
   id INT IDENTITY PRIMARY KEY, source VARCHAR(10) NOT NULL,
   title NVARCHAR(400) NULL, link NVARCHAR(600) NULL, published DATETIME2 NULL,
   matched_ticker NVARCHAR(20) NULL, matched_name NVARCHAR(150) NULL, in_universe BIT NOT NULL DEFAULT 0,
@@ -209,8 +284,14 @@ CREATE TABLE tbl_eb_trump_news (
   CONSTRAINT UQ_eb_trump UNIQUE (guid, matched_ticker));
 """
 MERGE = """
-INSERT INTO tbl_eb_trump_news (source,title,link,published,matched_ticker,matched_name,in_universe,sentiment,guid)
+INSERT INTO tbl_eb_pump_news (source,title,link,published,matched_ticker,matched_name,in_universe,sentiment,guid)
   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+  ON CONFLICT (guid, matched_ticker) DO NOTHING
+"""
+# Trump rows leave `figure` at its 'trump' default; the figure scan sets it explicitly.
+FIGURE_MERGE = """
+INSERT INTO tbl_eb_pump_news (figure,source,title,link,published,matched_ticker,matched_name,in_universe,sentiment,guid)
+  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
   ON CONFLICT (guid, matched_ticker) DO NOTHING
 """
 
@@ -426,7 +507,7 @@ def trump_holdings(conn):
     """His disclosed buys, derived from our OWN BUY-tier rows (self-maintaining list)."""
     cur = conn.cursor()
     buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
-    dbex(cur, f"SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news "
+    dbex(cur, f"SELECT DISTINCT matched_ticker FROM tbl_eb_pump_news "
                 f"WHERE in_universe=true AND ({buy_like})")
     return {r.matched_ticker for r in cur.fetchall()}
 
@@ -518,13 +599,13 @@ def send_pending_alerts(conn):
     buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
     where = (f"in_universe=true AND sentiment='positive' AND alerted=false AND ({buy_like}) "
              f"AND published >= (now() - interval '2 days')")
-    dbex(cur, f"SELECT matched_ticker, matched_name, title, link FROM tbl_eb_trump_news WHERE {where}")
+    dbex(cur, f"SELECT matched_ticker, matched_name, title, link FROM tbl_eb_pump_news WHERE {where}")
     rows = cur.fetchall()
     if not rows:
         return []
     # per-ticker cooldown: skip names already alerted in the last 3 days (no repeat spam
     # when fresh articles on the same event keep surfacing)
-    dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_trump_news
+    dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_pump_news
                    WHERE alerted=true AND fetched_on >= (now() - interval '3 days')""")
     cooldown = {r.matched_ticker for r in cur.fetchall()}
     FRESH_DAYS = 7   # spec 10/06/2026: nothing surfaces unless provably <= 7 days old
@@ -540,7 +621,7 @@ def send_pending_alerts(conn):
         if real is None:
             print(f"  unverified-bin {h.matched_ticker}: no provable date for '{(h.title or '')[:48]}'")
             continue
-        dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s, date_verified=true WHERE link=%s",
+        dbex(cur, "UPDATE tbl_eb_pump_news SET published=%s, date_verified=true WHERE link=%s",
              real, h.link)
         conn.commit()
         if (now - real).days > FRESH_DAYS:
@@ -567,7 +648,7 @@ def send_pending_alerts(conn):
         if not send_alert(subj, body):
             return []  # send failed - leave rows unalerted so it retries next run
     # mark ALL candidate rows handled (emailed + cooldown-suppressed) so dupes don't linger
-    dbex(cur, f"UPDATE tbl_eb_trump_news SET alerted=true WHERE {where}")
+    dbex(cur, f"UPDATE tbl_eb_pump_news SET alerted=true WHERE {where}")
     conn.commit()
     return sorted(seen_t)
 
@@ -579,10 +660,10 @@ def verify_recent(conn, limit=12):
     must prove their date - directly or via an alternative source - or stay unverified
     (and therefore never surface)."""
     cur = conn.cursor()
-    dbex(cur, """UPDATE tbl_eb_trump_news SET date_verified=true
+    dbex(cur, """UPDATE tbl_eb_pump_news SET date_verified=true
                  WHERE date_verified=false AND source IN ('wh','truth','pool')""")
     conn.commit()
-    dbex(cur, """SELECT id, title, link FROM tbl_eb_trump_news
+    dbex(cur, """SELECT id, title, link FROM tbl_eb_pump_news
                  WHERE source='google' AND date_verified=false AND in_universe=true
                    AND sentiment='positive' AND published >= now() - interval '7 days'
                  ORDER BY published DESC LIMIT %s""", limit)
@@ -592,7 +673,7 @@ def verify_recent(conn, limit=12):
         real = article_date(r.link) or alt_source_date(r.title)
         if real is None:
             continue
-        dbex(cur, "UPDATE tbl_eb_trump_news SET published=%s, date_verified=true WHERE id=%s",
+        dbex(cur, "UPDATE tbl_eb_pump_news SET published=%s, date_verified=true WHERE id=%s",
              real, r.id)
         n_ok += 1
     conn.commit()
@@ -600,8 +681,46 @@ def verify_recent(conn, limit=12):
         print(f"  date-verified {n_ok}/{len(rows)} recent google items")
 
 
+def scan_figures(conn, tok_map, tick_map, seen):
+    """Discovery for the non-Trump pumpers (Huang, hyperscaler CEOs, Altman, Su).
+    Same matching + sentiment as Trump, plus the curated alias map for clean
+    'figure backs Company' headlines. Sets the `figure` column. Returns count inserted."""
+    cur = conn.cursor()
+    ins = 0
+    for person in PEOPLE:
+        for url in figure_feeds(person):
+            try:
+                f = feedparser.parse(url)
+            except Exception as ex:
+                print(f"  figure feed error {str(ex)[:50]}"); continue
+            for e in f.entries:
+                title = (getattr(e, "title", "") or "")[:400]
+                fig = which_figure(title)
+                if not fig or fig == "trump":      # Trump handled by his own pipeline
+                    continue
+                guid = (getattr(e, "id", None) or getattr(e, "link", "") or "")[:320]
+                if not guid or guid in seen:
+                    continue
+                seen.add(guid)
+                mtitle = strip_src(title)
+                if sentiment(mtitle) != "positive" or is_wrap(mtitle):
+                    continue
+                tk, nm, kind, tok = match_company(mtitle, tok_map, tick_map)
+                ok = tk and (kind == "ticker" or (kind == "name" and pos_near(mtitle, tok)))
+                if not ok:
+                    atk, anm = alias_match(mtitle, fig)
+                    if atk:
+                        tk, nm, ok = atk, anm, True
+                if ok:
+                    dbex(cur, FIGURE_MERGE, fig, "google", title, (getattr(e, "link", "") or "")[:600],
+                         pub(e), tk, nm, True, "positive", guid)
+                    ins += 1
+            conn.commit()
+    return ins
+
+
 def main():
-    print(f"== trump scan {dt.datetime.now():%Y-%m-%d %H:%M:%S} ==", flush=True)
+    print(f"== stock-pumps scan {dt.datetime.now():%Y-%m-%d %H:%M:%S} ==", flush=True)
     conn = get_conn(); cur = conn.cursor()
     tok_map, tick_map = build_matcher(cur)
     seen, ins = set(), 0
@@ -662,11 +781,14 @@ def main():
         ins += 1
     conn.commit()
 
+    # ---- C) THE OTHER PUMPERS: Huang, hyperscaler CEOs, Altman, Su ----
+    ins += scan_figures(conn, tok_map, tick_map, seen)
+
     dbex(cur, """SELECT COUNT(*) n,
                    SUM(CASE WHEN in_universe=true AND sentiment='positive' THEN 1 ELSE 0 END) pos
-                   FROM tbl_eb_trump_news""")
+                   FROM tbl_eb_pump_news""")
     row = cur.fetchone()
-    print(f"trump_news: +{ins} this run | {row.n} total, {row.pos} positive & mapped")
+    print(f"stock_pumps: +{ins} this run | {row.n} total, {row.pos} positive & mapped")
     verify_recent(conn)
     alerted = send_pending_alerts(conn)
     if alerted:
@@ -681,7 +803,7 @@ def recent(conn, days=3):
     """For the digest: ESTABLISHED names Trump spoke POSITIVELY about, most recent first."""
     cur = conn.cursor()
     dbex(cur, """SELECT matched_ticker, matched_name, source, LEFT(title,60) t, published
-                   FROM tbl_eb_trump_news
+                   FROM tbl_eb_pump_news
                    WHERE in_universe=true AND sentiment='positive'
                      AND published >= (now() - (%s * interval '1 day'))
                    ORDER BY published DESC LIMIT 12""", days)

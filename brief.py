@@ -7,7 +7,7 @@ Per SPEC.md (10/06/2026), the brief always has the same three parts:
   2. A recommendation ("I recommend X because Y") - or a plain statement that
      nothing earns one.
   3. Anything we already hold or watch that needs attention.
-Plus a short section of verified-fresh Trump items, if any.
+Plus a short "stock pumps" section: companies a market-moving figure has backed (verified, <=7 days).
 
 Writing rules are baked in here, not left to chance: plain British English, no
 jargon (any unavoidable technical term is defined in brackets the first time),
@@ -23,7 +23,7 @@ Two rulers:
 import datetime as dt
 import html
 from eb_db import get_conn, dbex
-from trump_news import send_alert
+from stock_pumps import send_alert
 from converge import cross_fund_convergence
 
 P = "margin:0 0 8px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;line-height:1.45;color:#1a1a1a"
@@ -269,45 +269,31 @@ def section_watchlist(conn, conv):
     return items
 
 
-def section_trump(conn):
-    cur = conn.cursor()
-    dbex(cur, """
-      SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, LEFT(title, 90) t,
-             published, link
-      FROM tbl_eb_trump_news
-      WHERE in_universe = true AND sentiment = 'positive' AND date_verified = true
-        AND published >= now() - interval '7 days'
-      ORDER BY matched_ticker, published DESC""")
-    rows = cur.fetchall()
-    return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
-            f"({r.published:%d/%m}): {html.escape(r.t or '')}{_alink(r.link)} {_linktag(r.matched_ticker)}</p>"
-            for r in rows[:6]]
+# which figure pumped it -> plain label for the brief
+_FIG_LABEL = {"trump": "Trump", "huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella",
+              "pichai": "Google/Pichai", "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg",
+              "altman": "OpenAI/Altman", "su": "AMD/Su"}
 
 
-# figure key -> short label for the brief
-_FIG_LABEL = {"huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella", "pichai": "Google/Pichai",
-              "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg", "altman": "OpenAI/Altman",
-              "su": "AMD/Su"}
-
-
-def section_mentions(conn):
-    """Same shape and freshness rule as the Trump section, for the other tracked figures."""
+def section_pumps(conn):
+    """Stock pumps - established names a market-moving figure (Trump, Huang, the hyperscaler
+    CEOs, Altman, Su) has backed in the last 7 days, dates verified. One line per ticker."""
     cur = conn.cursor()
     try:
         dbex(cur, """
           SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, figure,
                  LEFT(title, 90) t, published, link
-          FROM tbl_eb_mention_news
+          FROM tbl_eb_pump_news
           WHERE in_universe = true AND sentiment = 'positive' AND date_verified = true
             AND published >= now() - interval '7 days'
           ORDER BY matched_ticker, published DESC""")
         rows = cur.fetchall()
     except Exception as ex:
-        print(f"mentions unavailable: {ex}"); return []
+        print(f"pumps unavailable: {ex}"); return []
     return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
-            f"({r.published:%d/%m}, via {_FIG_LABEL.get(r.figure, r.figure)}): "
+            f"({r.published:%d/%m}, via {_FIG_LABEL.get(r.figure, r.figure or 'a figure')}): "
             f"{html.escape(r.t or '')}{_alink(r.link)} {_linktag(r.matched_ticker)}</p>"
-            for r in rows[:6]]
+            for r in rows[:8]]
 
 
 def build_and_send(conn):
@@ -320,8 +306,7 @@ def build_and_send(conn):
 
     cards, rec = section_candidates(conn, conv)
     watch = section_watchlist(conn, conv)
-    trump = section_trump(conn)
-    mentions = section_mentions(conn)
+    pumps = section_pumps(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
     parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}. Three parts, same every week: "
@@ -348,13 +333,9 @@ def build_and_send(conn):
     else:
         parts.append(f"<p style=\"{P}\">No name we hold or watch needs attention this week.</p>")
 
-    if trump:
-        parts.append(f"<p style=\"{H}\">Also: verified Trump items (7 days, dates checked)</p>")
-        parts.extend(trump)
-
-    if mentions:
-        parts.append(f"<p style=\"{H}\">Also: industry figures backing a company (7 days, dates checked)</p>")
-        parts.extend(mentions)
+    if pumps:
+        parts.append(f"<p style=\"{H}\">Stock pumps - companies a big name has backed (7 days, dates checked)</p>")
+        parts.extend(pumps)
 
     parts.append(f"<p style=\"{P}\"><i>Reminder: pioneers lose money by design and are small "
                  "stakes only. A recommendation is a prompt to look, not an instruction.</i></p>")
@@ -362,8 +343,7 @@ def build_and_send(conn):
     body = "<div style='max-width:680px'>" + "".join(parts) + "</div>"
     ok = send_alert(f"EarlyBird weekly brief - {today}", body)
     print(f"brief: {len(cards)} cards, rec={'yes' if rec else 'no'}, "
-          f"{len(watch)} watchlist items, {len(trump)} trump items, "
-          f"{len(mentions)} mention items, emailed={ok}")
+          f"{len(watch)} watchlist items, {len(pumps)} stock-pump items, emailed={ok}")
     return ok
 
 

@@ -11,7 +11,7 @@ re-announced every day. Plain British English, no jargon.
 import html
 import yfinance as yf
 from eb_db import get_conn, dbex
-from trump_news import send_alert
+from stock_pumps import send_alert
 from wave_dips import live_buy, WEEKLY_RECENT_BARS, DAILY_RECENT_BARS
 
 COOLDOWN_DAYS = 7
