@@ -284,6 +284,32 @@ def section_trump(conn):
             for r in rows[:6]]
 
 
+# figure key -> short label for the brief
+_FIG_LABEL = {"huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella", "pichai": "Google/Pichai",
+              "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg", "altman": "OpenAI/Altman",
+              "su": "AMD/Su"}
+
+
+def section_mentions(conn):
+    """Same shape and freshness rule as the Trump section, for the other tracked figures."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """
+          SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, figure,
+                 LEFT(title, 90) t, published, link
+          FROM tbl_eb_mention_news
+          WHERE in_universe = true AND sentiment = 'positive' AND date_verified = true
+            AND published >= now() - interval '7 days'
+          ORDER BY matched_ticker, published DESC""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"mentions unavailable: {ex}"); return []
+    return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
+            f"({r.published:%d/%m}, via {_FIG_LABEL.get(r.figure, r.figure)}): "
+            f"{html.escape(r.t or '')}{_alink(r.link)} {_linktag(r.matched_ticker)}</p>"
+            for r in rows[:6]]
+
+
 def build_and_send(conn):
     try:
         conv_rows, _period = cross_fund_convergence(conn, min_funds=2, limit=60)
@@ -295,6 +321,7 @@ def build_and_send(conn):
     cards, rec = section_candidates(conn, conv)
     watch = section_watchlist(conn, conv)
     trump = section_trump(conn)
+    mentions = section_mentions(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
     parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}. Three parts, same every week: "
@@ -325,13 +352,18 @@ def build_and_send(conn):
         parts.append(f"<p style=\"{H}\">Also: verified Trump items (7 days, dates checked)</p>")
         parts.extend(trump)
 
+    if mentions:
+        parts.append(f"<p style=\"{H}\">Also: industry figures backing a company (7 days, dates checked)</p>")
+        parts.extend(mentions)
+
     parts.append(f"<p style=\"{P}\"><i>Reminder: pioneers lose money by design and are small "
                  "stakes only. A recommendation is a prompt to look, not an instruction.</i></p>")
 
     body = "<div style='max-width:680px'>" + "".join(parts) + "</div>"
     ok = send_alert(f"EarlyBird weekly brief - {today}", body)
     print(f"brief: {len(cards)} cards, rec={'yes' if rec else 'no'}, "
-          f"{len(watch)} watchlist items, {len(trump)} trump items, emailed={ok}")
+          f"{len(watch)} watchlist items, {len(trump)} trump items, "
+          f"{len(mentions)} mention items, emailed={ok}")
     return ok
 
 

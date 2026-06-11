@@ -33,6 +33,8 @@ jobs:
         run: python move_scan.py
       - name: Trump scan
         run: python trump_news.py
+      - name: Industry-figure mention scan (Huang, hyperscaler CEOs, Altman, Su)
+        run: python mention_news.py
       - name: Engine-room digest (log only, no email)
         run: python suggest.py
       - name: Watchlist buying-moment alert (emails only when a watched name triggers)
