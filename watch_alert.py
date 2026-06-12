@@ -21,11 +21,18 @@ from wave_dips import live_buy, WEEKLY_RECENT_BARS, DAILY_RECENT_BARS
 COOLDOWN_DAYS = 7
 P = "margin:0 0 8px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;line-height:1.45;color:#1a1a1a"
 _PRICE_BELOW = re.compile(r"PRICE_BELOW:\s*\$?([0-9]+(?:\.[0-9]+)?)", re.I)
+_PRICE_ABOVE = re.compile(r"PRICE_ABOVE:\s*\$?([0-9]+(?:\.[0-9]+)?)", re.I)
 
 
-def _price_target(triggers):
-    """The float target from a 'PRICE_BELOW: <n>' note in the triggers field, or None."""
+def _price_below(triggers):
+    """Float floor target from 'PRICE_BELOW: <n>' (a buy-the-dip trade), or None."""
     m = _PRICE_BELOW.search(triggers or "")
+    return float(m.group(1)) if m else None
+
+
+def _price_above(triggers):
+    """Float upside target from 'PRICE_ABOVE: <n>' (an offload/take-profit), or None."""
+    m = _PRICE_ABOVE.search(triggers or "")
     return float(m.group(1)) if m else None
 
 
@@ -46,7 +53,7 @@ def main():
         print("watch_alert: empty watchlist")
         return
     dbex(cur, """SELECT sym, kind FROM tbl_eb_alert_log
-                 WHERE kind IN ('buying-moment','price-target')
+                 WHERE kind IN ('buying-moment','price-target','sell-target')
                    AND sent_on >= now() - interval '%s days'""" % COOLDOWN_DAYS)
     cooled = {(r.sym, r.kind) for r in cur.fetchall()}
 
@@ -56,7 +63,8 @@ def main():
     multi = len(syms) > 1
 
     hits = []          # tested pattern: (sym, weekly_sig, daily_sig)
-    price_hits = []    # plain price target: (sym, last_price, target)
+    price_hits = []    # buy floor reached: (sym, last_price, target)
+    sell_hits = []     # offload target reached: (sym, last_price, target)
     for sym in syms:
         try:
             ddf = dy[sym] if multi else dy
@@ -67,11 +75,17 @@ def main():
             continue
         closes = ddf.dropna()["Close"]
         last = float(closes.iloc[-1])
+        trig = watch[sym].triggers
 
-        # 2. plain price target (independent of trend - it is a manual trade)
-        target = _price_target(watch[sym].triggers)
-        if target and last <= target and (sym, "price-target") not in cooled:
-            price_hits.append((sym, last, target))
+        # 2a. buy-the-dip floor target (manual trade, no trend check)
+        below = _price_below(trig)
+        if below and last <= below and (sym, "price-target") not in cooled:
+            price_hits.append((sym, last, below))
+
+        # 2b. offload / take-profit target (manual trade, no trend check)
+        above = _price_above(trig)
+        if above and last >= above and (sym, "sell-target") not in cooled:
+            sell_hits.append((sym, last, above))
 
         # 1. the tested dip-in-uptrend pattern
         if (sym, "buying-moment") in cooled or not _uptrend(closes):
@@ -81,7 +95,7 @@ def main():
         if w or d:
             hits.append((sym, w, d))
 
-    if not hits and not price_hits:
+    if not hits and not price_hits and not sell_hits:
         print("watch_alert: no buying moments today")
         conn.close()
         return
@@ -100,20 +114,30 @@ def main():
         blocks.append(f"<p style=\"{P}\">{body}</p>")
     for sym, last, target in price_hits:
         r = watch[sym]
-        body = (f"<b>{html.escape(r.name or sym)} ({sym})</b> has reached your price target: "
+        body = (f"<b>{html.escape(r.name or sym)} ({sym})</b> has reached your buy target: "
                 f"now ${last:.2f}, at or below your ${target:.2f} level. This is a planned trade "
                 f"entry you set, NOT the tested dip-in-uptrend pattern - your own trade plan applies.")
         if r.flags:
             body += f"<br><b>Notes:</b> {html.escape(r.flags[:240])}"
         blocks.append(f"<p style=\"{P}\">{body}</p>")
+    for sym, last, target in sell_hits:
+        r = watch[sym]
+        body = (f"<b>{html.escape(r.name or sym)} ({sym})</b> has reached your sell/offload target: "
+                f"now ${last:.2f}, at or above your ${target:.2f} level. Your offload plan applies - "
+                f"this is a prompt to take profit per the plan, not to hold and hope.")
+        if r.triggers:
+            body += f"<br><b>Your plan:</b> {html.escape(r.triggers[:240])}"
+        blocks.append(f"<p style=\"{P}\">{body}</p>")
     blocks.append(f"<p style=\"{P}\"><i>A prompt to look, not an instruction.</i></p>")
 
-    names = ", ".join([h[0] for h in hits] + [p[0] for p in price_hits])
-    if send_alert(f"EarlyBird buying moment: {names}", "<div style='max-width:680px'>" + "".join(blocks) + "</div>"):
+    names = ", ".join([h[0] for h in hits] + [p[0] for p in price_hits] + [s[0] for s in sell_hits])
+    if send_alert(f"EarlyBird alert: {names}", "<div style='max-width:680px'>" + "".join(blocks) + "</div>"):
         for sym, _w, _d in hits:
             dbex(cur, "INSERT INTO tbl_eb_alert_log (sym, kind) VALUES (%s, 'buying-moment')", sym)
         for sym, _l, _t in price_hits:
             dbex(cur, "INSERT INTO tbl_eb_alert_log (sym, kind) VALUES (%s, 'price-target')", sym)
+        for sym, _l, _t in sell_hits:
+            dbex(cur, "INSERT INTO tbl_eb_alert_log (sym, kind) VALUES (%s, 'sell-target')", sym)
         conn.commit()
         print(f"watch_alert: emailed {names}")
     conn.close()
