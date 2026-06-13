@@ -25,6 +25,8 @@ jobs:
         run: python reenrich.py failed 400
       - name: Pool refresh (screen)
         run: python pool.py
+      - name: Self-validate (remove junk, flag off-brief drift - keeps the engine honest)
+        run: python validate.py
       - name: Sector RSS
         run: python sector_news.py
       - name: Ticker news

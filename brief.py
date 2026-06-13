@@ -296,6 +296,27 @@ def section_pumps(conn):
             for r in rows[:8]]
 
 
+def section_selfcheck(conn):
+    """What the daily self-validate did this week - removals (junk pruned) and flags
+    (things needing your eye). Keeps the autonomous engine honest and visible."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """SELECT action, target, kind, reason FROM tbl_eb_audit_log
+                     WHERE run_on >= now() - interval '7 days'
+                       AND action IN ('removed','flagged','halt')
+                     ORDER BY CASE action WHEN 'halt' THEN 0 WHEN 'removed' THEN 1 ELSE 2 END, run_on DESC
+                     LIMIT 12""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"selfcheck unavailable: {ex}"); return []
+    out = []
+    for r in rows:
+        verb = {"removed": "Removed", "flagged": "Flag", "halt": "HALTED"}.get(r.action, r.action)
+        out.append(f"<p style=\"{P}\"><b>{verb}: {html.escape(r.target or '')}</b> "
+                   f"({html.escape(r.kind or '')}) - {html.escape(r.reason or '')}</p>")
+    return out
+
+
 def build_and_send(conn):
     try:
         conv_rows, _period = cross_fund_convergence(conn, min_funds=2, limit=60)
@@ -307,6 +328,7 @@ def build_and_send(conn):
     cards, rec = section_candidates(conn, conv)
     watch = section_watchlist(conn, conv)
     pumps = section_pumps(conn)
+    selfcheck = section_selfcheck(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
     parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}. Three parts, same every week: "
@@ -337,13 +359,18 @@ def build_and_send(conn):
         parts.append(f"<p style=\"{H}\">Stock pumps - companies a big name has backed (7 days, dates checked)</p>")
         parts.extend(pumps)
 
+    if selfcheck:
+        parts.append(f"<p style=\"{H}\">Self-check - what the engine cleaned or flagged this week</p>")
+        parts.extend(selfcheck)
+
     parts.append(f"<p style=\"{P}\"><i>Reminder: pioneers lose money by design and are small "
                  "stakes only. A recommendation is a prompt to look, not an instruction.</i></p>")
 
     body = "<div style='max-width:680px'>" + "".join(parts) + "</div>"
     ok = send_alert(f"EarlyBird weekly brief - {today}", body)
     print(f"brief: {len(cards)} cards, rec={'yes' if rec else 'no'}, "
-          f"{len(watch)} watchlist items, {len(pumps)} stock-pump items, emailed={ok}")
+          f"{len(watch)} watchlist items, {len(pumps)} stock-pump items, "
+          f"{len(selfcheck)} self-check items, emailed={ok}")
     return ok
 
 
