@@ -36,9 +36,10 @@ def _price_above(triggers):
     return float(m.group(1)) if m else None
 
 
-def _uptrend(daily_df):
-    """True if the last close is above the 200-day average - the tested health check."""
-    closes = daily_df["Close"].dropna()
+def _uptrend(closes):
+    """True if the last close is above the 200-day average - the tested health check.
+    Takes a Close price Series."""
+    closes = closes.dropna()
     if len(closes) < 200:
         return False
     return float(closes.iloc[-1]) > float(closes.rolling(200).mean().iloc[-1])
@@ -71,9 +72,13 @@ def main():
             wdf = wk[sym] if multi else wk
         except Exception:
             continue
-        if ddf is None or ddf.dropna().empty:
+        # robust Close extraction: a failed download in a batch can return a frame with no
+        # 'Close' column - guard it rather than crash the whole run.
+        if ddf is None or "Close" not in getattr(ddf, "columns", []):
             continue
-        closes = ddf.dropna()["Close"]
+        closes = ddf["Close"].dropna()
+        if closes.empty:
+            continue
         last = float(closes.iloc[-1])
         trig = watch[sym].triggers
 
@@ -87,7 +92,7 @@ def main():
         if above and last >= above and (sym, "sell-target") not in cooled:
             sell_hits.append((sym, last, above))
 
-        # 1. the tested dip-in-uptrend pattern
+        # 1. the tested dip-in-uptrend pattern (pass the Close series directly)
         if (sym, "buying-moment") in cooled or not _uptrend(closes):
             continue
         w = live_buy(wdf, WEEKLY_RECENT_BARS) if wdf is not None else None
