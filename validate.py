@@ -82,6 +82,13 @@ def main():
     removals, flags = [], []
 
     def log(action, target, kind, reason):
+        # idempotent: do not re-log the same (action,target,kind) if raised in the last 7 days,
+        # so a daily run does not fill the brief with repeated flags.
+        dbex(cur, """SELECT 1 FROM tbl_eb_audit_log
+                     WHERE action=%s AND target=%s AND kind=%s
+                       AND run_on >= now() - interval '7 days' LIMIT 1""", action, target, kind)
+        if cur.fetchone():
+            return
         dbex(cur, "INSERT INTO tbl_eb_audit_log (action,target,kind,reason) VALUES (%s,%s,%s,%s)",
              action, target, kind, reason[:300])
 
