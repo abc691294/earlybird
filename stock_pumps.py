@@ -216,14 +216,23 @@ FIGURES = {
     "zuck":    r"\b(Mark Zuckerberg|Zuckerberg)\b",
     "altman":  r"\b(Sam Altman|Altman)\b",
     "su":      r"\b(Lisa Su)\b",
+    # really key players whose positive word re-rates a stock
+    "bezos":   r"\b(Jeff Bezos|Bezos|Blue Origin)\b",      # space / Blue Origin signal, + Amazon
+    "wood":    r"\b(Cathie Wood|ARK Invest|ARK Innovation)\b",  # moves small-cap future-tech
+    "son":     r"\b(Masayoshi Son|SoftBank)\b",            # AI/chip names (Arm, AI bets)
+    "intel":   r"\b(Intel CEO|Lip-Bu Tan)\b",              # chip supply-chain / foundry roadmap
 }
 _FIGURE_RX = {k: re.compile(v) for k, v in FIGURES.items()}
 # the people whose names drive the discovery feeds (Trump has his own GNEWS + primary sources)
 PEOPLE = ["Jensen Huang", "Satya Nadella", "Sundar Pichai", "Andy Jassy",
-          "Mark Zuckerberg", "Sam Altman", "Lisa Su"]
-# each figure's own company - we want who they BACK, not a headline that's merely about them
+          "Mark Zuckerberg", "Sam Altman", "Lisa Su",
+          "Jeff Bezos", "Cathie Wood", "Masayoshi Son", "Lip-Bu Tan"]
+# each figure's own company - we want who they BACK, not a headline that's merely about them.
+# (Bezos/Amazon kept as own so an Amazon-results story doesn't tag AMZN; his SPACE comments
+# still map to the launch names via the alias map + 'Blue Origin' in his regex.)
 OWN_TICKER = {"huang": "NVDA", "nadella": "MSFT", "pichai": "GOOGL", "jassy": "AMZN",
-              "zuck": "META", "altman": None, "su": "AMD", "trump": None}
+              "zuck": "META", "altman": None, "su": "AMD", "trump": None,
+              "bezos": "AMZN", "wood": None, "son": None, "intel": "INTC"}
 
 
 def which_figure(title):

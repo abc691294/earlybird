@@ -272,7 +272,9 @@ def section_watchlist(conn, conv):
 # which figure pumped it -> plain label for the brief
 _FIG_LABEL = {"trump": "Trump", "huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella",
               "pichai": "Google/Pichai", "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg",
-              "altman": "OpenAI/Altman", "su": "AMD/Su"}
+              "altman": "OpenAI/Altman", "su": "AMD/Su",
+              "bezos": "Bezos/Blue Origin", "wood": "Cathie Wood/ARK",
+              "son": "SoftBank/Son", "intel": "Intel/Tan"}
 
 
 def section_pumps(conn):
