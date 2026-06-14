@@ -18,8 +18,9 @@ import yfinance as yf
 from eb_db import get_conn
 
 CHUNK_DEFAULT = 400          # names per 'failed' run (~10 min at 1.5s pacing)
-PACE_SECONDS = 1.5
-BACKOFF_AFTER = 5            # consecutive rate-limit errors -> Yahoo is throttling, stop
+PACE_FAST = 0.25            # default pacing while Yahoo is happy (no throttling)
+PACE_SLOW = 1.5             # ease off to this when rate-limit errors appear
+BACKOFF_AFTER = 5           # consecutive rate-limit errors -> Yahoo is throttling, stop
 
 UPSERT = """
 INSERT INTO tbl_eb_fundamentals
@@ -75,8 +76,12 @@ def _is_rate_limit(note):
 
 def _process(conn, syms, label):
     cur = conn.cursor()
-    ok = consec_rl = 0
+    ok = consec_rl = recent_rl = 0
     done = 0
+    # ADAPTIVE pacing: run fast while Yahoo is happy; only slow down if it starts throttling.
+    # The old fixed 1.5s sleep meant the heal was mostly ASLEEP - hours of waiting for a
+    # connection that wasn't being rate-limited. Now: fast by default, back off on signal.
+    pace = PACE_FAST
     for n, sym in enumerate(syms, 1):
         row = fetch(sym)
         done += 1
@@ -85,15 +90,21 @@ def _process(conn, syms, label):
             conn.commit()
             ok += 1
             consec_rl = 0
+            recent_rl = max(0, recent_rl - 1)         # earn back speed after clean fetches
+            if recent_rl == 0:
+                pace = PACE_FAST
         else:
-            # failed fetch: do NOT upsert (a row of NULLs would wipe a prior good row).
-            # leave the existing row untouched so it stays in the backlog and retries later.
-            note = row[19] or ""
-            consec_rl = consec_rl + 1 if _is_rate_limit(note) else 0
-            if _is_rate_limit(note) and consec_rl >= BACKOFF_AFTER:
-                print(f"  backing off: {consec_rl} consecutive rate-limit errors at {sym}")
-                break
-        time.sleep(PACE_SECONDS)
+            note = row[19] or ""                      # leave existing row untouched on failure
+            if _is_rate_limit(note):
+                consec_rl += 1
+                recent_rl += 3
+                pace = PACE_SLOW                       # throttled -> ease off
+                if consec_rl >= BACKOFF_AFTER:
+                    print(f"  backing off: {consec_rl} consecutive rate-limit errors at {sym}")
+                    break
+            else:
+                consec_rl = 0                          # a 404/unresolvable isn't rate-limiting
+        time.sleep(pace)
     print(f"{label}: {ok}/{done} fetched ok this run")
     return ok, done
 
