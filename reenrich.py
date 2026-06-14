@@ -79,13 +79,15 @@ def _process(conn, syms, label):
     done = 0
     for n, sym in enumerate(syms, 1):
         row = fetch(sym)
-        cur.execute(UPSERT, row)
-        conn.commit()
         done += 1
-        if row[18]:                                   # fetch_ok
+        if row[18]:                                   # fetch_ok - ONLY write on success
+            cur.execute(UPSERT, row)                  # never overwrite good data with NULLs
+            conn.commit()
             ok += 1
             consec_rl = 0
         else:
+            # failed fetch: do NOT upsert (a row of NULLs would wipe a prior good row).
+            # leave the existing row untouched so it stays in the backlog and retries later.
             note = row[19] or ""
             consec_rl = consec_rl + 1 if _is_rate_limit(note) else 0
             if _is_rate_limit(note) and consec_rl >= BACKOFF_AFTER:
