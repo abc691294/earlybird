@@ -31,24 +31,28 @@ def _is_dead_note(note):
 
 
 def pick(conn, n=BATCH):
-    """The top N names most worth checking now: held/watched first, then strong-fit pool,
-    then the rest still missing data - stalest last_checked first within each band.
-    Excludes anything already marked dead."""
+    """GAPS FIRST: clear the whole universe before refreshing anything.
+    Priority: (1) names with NO data yet (market_cap NULL/0) - regardless of band; only THEN
+    (2) held/watched names that already have data, for a refresh. Within 'gaps', held/watched
+    and strong-fit still sort ahead so the most useful gaps fill first, and never-checked
+    before stale-checked. Excludes dead tickers."""
     cur = conn.cursor()
     dbex(cur, """
         SELECT u.yf_ticker
         FROM tbl_eb_universe u
         JOIN tbl_eb_fundamentals f ON f.yf_ticker = u.yf_ticker
         WHERE u.active AND f.dead = false
-          AND (f.market_cap IS NULL OR f.market_cap = 0          -- still needs data, OR
-               OR EXISTS (SELECT 1 FROM tbl_eb_watchlist w        -- held/watched: refresh even if filled
+          AND (f.market_cap IS NULL OR f.market_cap = 0          -- a GAP (no data), OR
+               OR EXISTS (SELECT 1 FROM tbl_eb_watchlist w        -- held/watched (refresh once gaps done)
                           WHERE w.sym = u.yf_ticker AND w.active))
         ORDER BY
-          -- band 1: held/watched
+          -- 1) GAPS before refreshes: anything missing data comes first, full stop
+          (f.market_cap IS NOT NULL AND f.market_cap > 0) ASC,
+          -- 2) within gaps, fill the most useful first: held/watched, then strong-fit pool
           (EXISTS (SELECT 1 FROM tbl_eb_watchlist w WHERE w.sym = u.yf_ticker AND w.active)) DESC,
-          -- band 2: strong-fit pool
           (EXISTS (SELECT 1 FROM tbl_eb_pool p WHERE p.yf_ticker = u.yf_ticker AND p.fit = 'strong')) DESC,
-          f.last_checked ASC NULLS FIRST                          -- stalest first
+          -- 3) never-checked before stale-checked
+          f.last_checked ASC NULLS FIRST
         LIMIT %s""", n)
     return [r.yf_ticker for r in cur.fetchall()]
 
