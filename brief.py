@@ -315,6 +315,31 @@ def section_chokepoints(conn):
             for r in rows[:8]]
 
 
+def section_radar(conn):
+    """Emerging themes the engine has no keyword for yet - clusters of terms appearing across
+    several moving names. The engine proposes; you decide whether any becomes a real theme.
+    Only multi-word (specific) candidates, and ones that have shown up across multiple runs
+    OR score high - a one-day blip is filtered, a building wave is surfaced."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """SELECT phrase, n_tickers, tickers, example, runs
+                     FROM tbl_eb_theme_candidate
+                     WHERE status = 'new' AND brief_worthy = true
+                       AND last_seen >= now() - interval '10 days'
+                     ORDER BY (runs >= 2) DESC, score DESC
+                     LIMIT 5""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"radar unavailable: {ex}"); return []
+    out = []
+    for r in rows:
+        recur = " (recurring)" if (r.runs or 1) >= 2 else ""
+        out.append(f"<p style=\"{P}\"><b>&ldquo;{html.escape(r.phrase)}&rdquo;</b>{recur} "
+                   f"- seen across {r.n_tickers} moving names ({html.escape(r.tickers or '')}). "
+                   f"<i>{html.escape((r.example or '')[:110])}</i></p>")
+    return out
+
+
 def section_selfcheck(conn):
     """What the daily self-validate did this week - removals (junk pruned) and flags
     (things needing your eye). Keeps the autonomous engine honest and visible."""
@@ -348,6 +373,7 @@ def build_and_send(conn):
     watch = section_watchlist(conn, conv)
     pumps = section_pumps(conn)
     choke = section_chokepoints(conn)
+    radar = section_radar(conn)
     selfcheck = section_selfcheck(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
@@ -385,6 +411,13 @@ def build_and_send(conn):
                      "rivals, can't be substituted, and can't keep up with demand. A real moat - "
                      "not a buy signal on its own, but names worth knowing.</i></p>")
         parts.extend(choke)
+
+    if radar:
+        parts.append(f"<p style=\"{H}\">Theme radar - new ideas the engine spotted forming</p>")
+        parts.append(f"<p style=\"{P}\"><i>Terms cropping up across several moving names that we "
+                     "don't yet track as a theme. Possible next waves. None is acted on - they're "
+                     "here for you to say whether any is worth following.</i></p>")
+        parts.extend(radar)
 
     if selfcheck:
         parts.append(f"<p style=\"{H}\">Self-check - what the engine cleaned or flagged this week</p>")
