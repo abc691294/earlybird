@@ -12,13 +12,47 @@ import sys
 from eb_db import get_conn, dbex
 
 
+# chokepoint = critical + few/sole suppliers + not substitutable (derived, never stored stale).
+# hot chokepoint = chokepoint AND supply is constrained right now (sold out / backlogged).
+_CHOKE = "(criticality IN ('essential','high') AND exclusivity IN ('sole','few') AND substitutable IS NOT TRUE)"
+
+
+def crit_tag(r):
+    """A short '!chokepoint' / 'CHOKEPOINT(sold out)' tag derived from the criticality fields."""
+    crit = getattr(r, "criticality", None)
+    if not crit:
+        return ""
+    choke = crit in ("essential", "high") and getattr(r, "exclusivity", "") in ("sole", "few") \
+        and not getattr(r, "substitutable", False)
+    if choke and getattr(r, "constrained_now", False):
+        return f"  ** HOT CHOKEPOINT ({crit}/{r.exclusivity}, sold out): {r.constraint_note or ''}"
+    if choke:
+        return f"  * chokepoint ({crit}/{r.exclusivity})"
+    return f"  [{crit}/{getattr(r,'exclusivity','?')}]"
+
+
 def suppliers_of(conn, target, max_layer=3):
     """Names that feed `target` (a ticker or theme/leader label), nearest layer first."""
     cur = conn.cursor()
-    dbex(cur, """SELECT upstream, upstream_name, layer, role, listed, note
+    dbex(cur, """SELECT upstream, upstream_name, layer, role, listed, note,
+                        supply_type, criticality, exclusivity, competitors, substitutable,
+                        constrained_now, constraint_note
                  FROM tbl_eb_supply_link
                  WHERE downstream = %s AND layer <= %s
                  ORDER BY layer, listed DESC, upstream""", target, max_layer)
+    return cur.fetchall()
+
+
+def chokepoints(conn, hot_only=False):
+    """The structurally-protected suppliers: critical + few-suppliers + unsubstitutable.
+    hot_only adds constrained_now (demand exceeds supply RIGHT NOW)."""
+    cur = conn.cursor()
+    extra = " AND constrained_now = true" if hot_only else ""
+    dbex(cur, f"""SELECT DISTINCT ON (upstream) upstream, upstream_name, criticality, exclusivity,
+                        competitors, constrained_now, constraint_note, theme
+                 FROM tbl_eb_supply_link
+                 WHERE {_CHOKE}{extra}
+                 ORDER BY upstream, criticality""")
     return cur.fetchall()
 
 
@@ -55,6 +89,15 @@ def main():
         print(f"\n{tk} appears in these chains (what it feeds):")
         for r in feeds_of(conn, tk):
             print(f"  {r.theme:9} -> feeds {r.downstream:18} (L{r.layer}, {r.role})")
+    elif args[0] in ("--chokepoints", "--hot"):
+        hot = args[0] == "--hot"
+        label = "HOT CHOKEPOINTS (critical + few-suppliers + unsubstitutable + SOLD OUT NOW)" if hot \
+            else "CHOKEPOINTS (critical input, few/sole suppliers, no substitute)"
+        print(f"\n{label}:")
+        for r in chokepoints(conn, hot_only=hot):
+            comp = f" vs {r.competitors}" if r.competitors else " (sole supplier)"
+            cons = f"  - {r.constraint_note}" if r.constrained_now and r.constraint_note else ""
+            print(f"  {r.upstream:8} {(r.upstream_name or '')[:22]:22} [{r.criticality}/{r.exclusivity}]{comp}{cons}")
     else:
         target = args[0]
         print(f"\nSuppliers feeding {target} (the picks-and-shovels):")
@@ -63,8 +106,7 @@ def main():
             print("  (nothing mapped yet - add links to tbl_eb_supply_link)")
         for r in rows:
             tag = "" if r.listed else "  (private - not buyable)"
-            note = f"  - {r.note}" if r.note else ""
-            print(f"  L{r.layer}  {r.upstream:8} {(r.upstream_name or '')[:24]:24} [{r.role}]{tag}{note}")
+            print(f"  L{r.layer}  {r.upstream:8} {(r.upstream_name or '')[:24]:24} [{r.role}]{tag}{crit_tag(r)}")
     conn.close()
 
 
