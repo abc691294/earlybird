@@ -48,3 +48,46 @@ than a worry.
 **Touches:** watchlist (conviction flag), fundamentals (range_pct / wk52_high), possibly the
 snapshot store, and a new alert script or a brief section. Pairs with the existing chokepoint
 signal - a hot chokepoint we hold, on a dip, is the sharpest version of this.
+
+**Later: T212-app push notification.** Once the dip signal proves itself, the natural delivery
+upgrade is a notification in the T212 app itself, so a buy-the-dip nudge is one tap from acting
+rather than buried in an email. Front-end work, after the engine-side signal is trusted.
+
+---
+
+## Full engine review - 15/06/2026
+
+Findings from a full sweep (21 scripts, 3 workflows, 18 tables - all daily-fed tables fresh).
+Engine is healthy; gaps ranked by value.
+
+**Real gaps:**
+1. **Dips in OUR names are invisible (highest value).** `wave_dips.live_buy` only scans the
+   >$5B strong pool + NASDAQ-100. Verified: 10 of 12 held/high-conviction names are NOT covered
+   (every held small-cap - ONDS, BURU, XNDU, ALMU, MOB, IQE.L, SATL - plus OUST, BBAI, CBRS).
+   The engine watches the giants and is blind to what we own. This is the buy-the-dip item
+   above. NOTE: kept SEPARATE from the Wave signal per user - this is its own drawdown/dip
+   signal on our names, not a change to wave_dips.
+2. **No price history stored.** Every table holds a snapshot; nothing keeps a price series. Any
+   dip/trend question needs a live yfinance pull. The deferred snapshot store is the missing
+   foundation under gap 1.
+3. **Brief has no dip/timing section.** Renders candidates/watchlist/pumps/chokepoints/radar/
+   self-check - nothing surfaces a held name pulling back. Needs section_dips() once gap 1 lands.
+
+**Verified NOT broken (checked 15/06):**
+- 13F staleness is expected, not a failure - filing dates (May 8-18, Feb cluster) match the SEC
+  quarterly + 45-day-lag calendar. Next batch ~Aug (Q2). BUT sa_13f writes no fetch timestamp,
+  so a stalled job and a no-new-filings week look identical in the data - small observability gap.
+- policy_signal / stake are event-driven and sparse by nature, not stalled.
+- "Orphan" scripts (wave_dips, converge, supply) are imported by wired scripts; seeds are
+  one-time; sa_13f is in weekly.yml. None actually dead.
+
+**Minor:**
+- **keyword_log audit trail is broken.** tbl_eb_keyword_log last entry 03/06. The 12 keywords
+  added since (SIMO + 4 watchlist fixes) went into tbl_eb_sector_keywords but were NOT logged
+  here - the change inserts bypass the log. Backfill those 12 and route future keyword changes
+  through the log.
+- Watchlist `priority` field inconsistent ('', 'high', 'held') - normalise in one pass; the
+  dip-scope query keys off held=true OR priority='high'.
+- validate.py flags off-brief names to logs only; the human never sees them unless reading CI.
+- Definitive workflow health (did weekly jobs run green) needs the GitHub Actions UI - not
+  visible from the DB or from this environment (gh not authed locally).
