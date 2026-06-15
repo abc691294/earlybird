@@ -33,6 +33,14 @@ than a worry.
   - Caveat: these fit a high-beta runner like COHR. A steadier holding may want tighter z
     (~7/10%). Build choice: one global pair, or scale z per-name to its own typical dip depth
     (the COHR measurement above is exactly that per-name calc).
+
+  **Counter-example - OUST (Ouster, lidar), proves per-name z is needed.** Far wilder than
+  COHR: worst drawdown -55%, with dips of 22/28/44/47/51/53/55% through the year. It was
+  >=10% below peak on **79%** of days, >=25% on **51%**, >=30% on **42%**. For OUST a 10-15%
+  dip is noise (it's there almost always); a real "worth a look" is ~25%, "meaningful" ~35-40%.
+  A single global z (10/15%) would fire on OUST constantly and be useless. **Conclusion: scale
+  z to each name's own dip distribution** (e.g. trigger at the name's ~70th-percentile drawdown
+  for "look" and ~85th for "meaningful"), not one global pair. Same calc, run per holding.
 - *Delivery:* same-day buying-moment alert (like watch_alert.py) vs a line in the weekly
   brief. A dip is time-sensitive, so an alert is the likely fit.
 - *Guardrail:* this is a prompt to look, never an instruction to buy. The user makes the call.
