@@ -25,6 +25,7 @@ import html
 from eb_db import get_conn, dbex
 from stock_pumps import send_alert
 from converge import cross_fund_convergence
+from supply import chokepoints
 
 P = "margin:0 0 8px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;line-height:1.45;color:#1a1a1a"
 H = "margin:18px 0 6px;font-family:'Segoe UI',Arial,sans-serif;font-size:10pt;font-weight:700;color:#1a1a1a"
@@ -298,6 +299,22 @@ def section_pumps(conn):
             for r in rows[:8]]
 
 
+def section_chokepoints(conn):
+    """The structurally-protected names: critical input, few/sole suppliers, no substitute, AND
+    sold out / backlogged right now. A supplier nobody can route around has pricing power and a
+    real moat - worth knowing which of these are buyable. Only listed names, only the hot ones."""
+    try:
+        rows = chokepoints(conn, hot_only=True)
+    except Exception as ex:
+        print(f"chokepoints unavailable: {ex}"); return []
+    # only buyable names (have a ticker), de-dup by ticker already handled in chokepoints()
+    rows = [r for r in rows if r.upstream and "(pvt" not in (r.upstream_name or "").lower()]
+    return [f"<p style=\"{P}\"><b>{html.escape(r.upstream_name or r.upstream)}</b> "
+            f"[{html.escape(r.criticality or '')}/{html.escape(r.exclusivity or '')}]: "
+            f"{html.escape(r.constraint_note or 'supply constrained')} {_linktag(r.upstream)}</p>"
+            for r in rows[:8]]
+
+
 def section_selfcheck(conn):
     """What the daily self-validate did this week - removals (junk pruned) and flags
     (things needing your eye). Keeps the autonomous engine honest and visible."""
@@ -330,6 +347,7 @@ def build_and_send(conn):
     cards, rec = section_candidates(conn, conv)
     watch = section_watchlist(conn, conv)
     pumps = section_pumps(conn)
+    choke = section_chokepoints(conn)
     selfcheck = section_selfcheck(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
@@ -360,6 +378,13 @@ def build_and_send(conn):
     if pumps:
         parts.append(f"<p style=\"{H}\">Stock pumps - companies a big name has backed (7 days, dates checked)</p>")
         parts.extend(pumps)
+
+    if choke:
+        parts.append(f"<p style=\"{H}\">Chokepoints - critical suppliers that are sold out right now</p>")
+        parts.append(f"<p style=\"{P}\"><i>These make something everyone needs, have few or no "
+                     "rivals, can't be substituted, and can't keep up with demand. A real moat - "
+                     "not a buy signal on its own, but names worth knowing.</i></p>")
+        parts.extend(choke)
 
     if selfcheck:
         parts.append(f"<p style=\"{H}\">Self-check - what the engine cleaned or flagged this week</p>")
