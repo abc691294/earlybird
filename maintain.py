@@ -71,8 +71,15 @@ def main():
         row = fetch(sym)
         if row[18]:                                   # fetch_ok -> write the data
             cur.execute(UPSERT, row)
-            dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s WHERE yf_ticker=%s", now, sym)
-            ok += 1
+            # a price-only row with no market_cap AND no industry is an ETF/fund/thin secondary
+            # listing - yfinance has no company fundamentals for it, so it can never enrich
+            # usefully. Mark dead so it stops counting as a gap and the loop stops re-checking it.
+            if not row[3] and not row[16]:            # no market_cap (idx 3) and no industry (idx 16)
+                dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s WHERE yf_ticker=%s", now, sym)
+                dead += 1
+            else:
+                dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s WHERE yf_ticker=%s", now, sym)
+                ok += 1
         else:
             note = row[19] or ""
             if _is_dead_note(note) and not _is_rate_limit(note):
