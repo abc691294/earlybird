@@ -36,6 +36,24 @@ def _price_above(triggers):
     return float(m.group(1)) if m else None
 
 
+def _price_frame(df):
+    """Normalise a yfinance frame to flat OHLCV columns ('Close','High',...).
+    yfinance returns MultiIndex columns for batch/group_by downloads and partial failures;
+    flatten to the price level so 'Close' indexing is reliable. Returns None if unusable."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    cols = getattr(df, "columns", None)
+    if cols is not None and getattr(cols, "nlevels", 1) > 1:
+        # pick the level that actually holds the OHLCV names
+        for lvl in range(cols.nlevels):
+            names = set(cols.get_level_values(lvl))
+            if "Close" in names:
+                df = df.copy()
+                df.columns = cols.get_level_values(lvl)
+                break
+    return df
+
+
 def _uptrend(closes):
     """True if the last close is above the 200-day average - the tested health check.
     Takes a Close price Series."""
@@ -72,9 +90,14 @@ def main():
             wdf = wk[sym] if multi else wk
         except Exception:
             continue
-        # robust Close extraction: a failed download in a batch can return a frame with no
-        # 'Close' column - guard it rather than crash the whole run.
-        if ddf is None or "Close" not in getattr(ddf, "columns", []):
+        # robust Close extraction. yfinance is inconsistent: a partial/failed batch download can
+        # return a frame with MultiIndex columns (e.g. (sym,'Close')), which makes a plain
+        # 'Close' in columns check pass while ddf['Close'] then mis-selects and crashes
+        # (KeyError/DateParseError 'Close' - killed the 12/06 run). Flatten to the price level
+        # first, then guard. A name with no usable Close is skipped, not fatal.
+        ddf = _price_frame(ddf)
+        wdf = _price_frame(wdf)
+        if ddf is None or "Close" not in ddf.columns:
             continue
         closes = ddf["Close"].dropna()
         if closes.empty:
