@@ -221,18 +221,26 @@ FIGURES = {
     "wood":    r"\b(Cathie Wood|ARK Invest|ARK Innovation)\b",  # moves small-cap future-tech
     "son":     r"\b(Masayoshi Son|SoftBank)\b",            # AI/chip names (Arm, AI bets)
     "intel":   r"\b(Intel CEO|Lip-Bu Tan)\b",              # chip supply-chain / foundry roadmap
+    # surfaced by the theme radar as recurring market-mover figures (no own ticker - they
+    # comment on OTHER names): Cramer moves stocks on a CNBC mention; Aschenbrenner's AI calls
+    # (Situational Awareness, now runs an AI-focused fund) re-rate AI/compute names.
+    "cramer":  r"\b(Jim Cramer|Cramer|Mad Money)\b",
+    "aschenbrenner": r"\b(Leopold Aschenbrenner|Aschenbrenner|Situational Awareness)\b",
+    "patel":   r"\b(Dylan Patel|SemiAnalysis)\b",          # semis/AI-compute calls re-rate chip names
 }
 _FIGURE_RX = {k: re.compile(v) for k, v in FIGURES.items()}
 # the people whose names drive the discovery feeds (Trump has his own GNEWS + primary sources)
 PEOPLE = ["Jensen Huang", "Satya Nadella", "Sundar Pichai", "Andy Jassy",
           "Mark Zuckerberg", "Sam Altman", "Lisa Su",
-          "Jeff Bezos", "Cathie Wood", "Masayoshi Son", "Lip-Bu Tan"]
+          "Jeff Bezos", "Cathie Wood", "Masayoshi Son", "Lip-Bu Tan",
+          "Jim Cramer", "Leopold Aschenbrenner", "Dylan Patel"]
 # each figure's own company - we want who they BACK, not a headline that's merely about them.
 # (Bezos/Amazon kept as own so an Amazon-results story doesn't tag AMZN; his SPACE comments
 # still map to the launch names via the alias map + 'Blue Origin' in his regex.)
 OWN_TICKER = {"huang": "NVDA", "nadella": "MSFT", "pichai": "GOOGL", "jassy": "AMZN",
               "zuck": "META", "altman": None, "su": "AMD", "trump": None,
-              "bezos": "AMZN", "wood": None, "son": None, "intel": "INTC"}
+              "bezos": "AMZN", "wood": None, "son": None, "intel": "INTC",
+              "cramer": None, "aschenbrenner": None, "patel": None}
 
 
 def which_figure(title):
@@ -328,6 +336,11 @@ _POS = re.compile(r"\b(prais\w*|tout\w*|hail\w*|back(?:s|ed|ing)|endors\w*|boost
 _NEG = re.compile(r"\b(slam\w*|blast\w*|attack\w*|criticis\w*|criticiz\w*|threat\w*|prob\w*|"
                   r"lawsuit|sues?|sued|feud|penal\w*|fraud|plung\w*|sink\w*|tumbl\w*|"
                   r"plummet\w*|crash\w*|warn\w*|ban\b|bans\b)\b", re.I)
+# don't-buy / wait language - a figure can say "I like it BUT don't buy yet". That's a hold,
+# not a pump, even though 'buy'/'like'/'deal' would otherwise read positive. Overrides _POS.
+_HOLD = re.compile(r"(do(?:n'?t| not) (?:want you to )?buy|wouldn'?t buy|not (?:a )?buy\b|"
+                   r"avoid buying|hold off|table buying|wait (?:to|before|until) buy|"
+                   r"too early to buy|don'?t (?:chase|touch))", re.I)
 _WRAP = re.compile(r"\b(dow|s&p|nasdaq|futures|wall street|stock market today|markets? today)\b", re.I)
 _TRUMP = re.compile(r"\bTrump\b")  # proper noun only - excludes verb "trumps"
 
@@ -347,6 +360,8 @@ def strip_src(title):
 
 def sentiment(title):
     t = title or ""
+    if _HOLD.search(t):  # explicit "don't buy / wait" overrides any positive verb -> not a pump
+        return "neutral"
     if _POS.search(t):   # price/Trump-favourable language present -> positive
         return "positive"
     if _NEG.search(t):
