@@ -73,6 +73,17 @@ Engine is healthy; gaps ranked by value.
 3. **Brief has no dip/timing section.** Renders candidates/watchlist/pumps/chokepoints/radar/
    self-check - nothing surfaces a held name pulling back. Needs section_dips() once gap 1 lands.
 
+**Workflow health (verified 15/06 via GitHub Actions API - reachable through the stored git
+credential; `gh` is not installed but plain HTTPS to api.github.com works):**
+- **Weekly Refresh** (14/06): success - enrich, 13F, brief all ran clean.
+- **Daily Refresh**: green most days. **12/06 FAILED - now fixed.** Cause was a real recurring
+  bug in watch_alert.py (the same-day alert): yfinance returns MultiIndex columns on batch/
+  partial-failure downloads, the old 'Close' in columns guard passed those through, then
+  ddf['Close'] mis-selected and crashed (KeyError/DateParseError 'Close'), killing the run and
+  losing that day's alerts. Fixed by _price_frame() flattening the frame before indexing;
+  verified end-to-end (exit 0). Would have recurred on any day yfinance returned that shape.
+- **Stock Pumps Hourly**: running clean every hour.
+
 **Verified NOT broken (checked 15/06):**
 - 13F staleness is expected, not a failure - filing dates (May 8-18, Feb cluster) match the SEC
   quarterly + 45-day-lag calendar. Next batch ~Aug (Q2). BUT sa_13f writes no fetch timestamp,
@@ -81,7 +92,7 @@ Engine is healthy; gaps ranked by value.
 - "Orphan" scripts (wave_dips, converge, supply) are imported by wired scripts; seeds are
   one-time; sa_13f is in weekly.yml. None actually dead.
 
-**Minor:**
+**Minor (still open):**
 - **keyword_log audit trail is broken.** tbl_eb_keyword_log last entry 03/06. The 12 keywords
   added since (SIMO + 4 watchlist fixes) went into tbl_eb_sector_keywords but were NOT logged
   here - the change inserts bypass the log. Backfill those 12 and route future keyword changes
@@ -89,5 +100,4 @@ Engine is healthy; gaps ranked by value.
 - Watchlist `priority` field inconsistent ('', 'high', 'held') - normalise in one pass; the
   dip-scope query keys off held=true OR priority='high'.
 - validate.py flags off-brief names to logs only; the human never sees them unless reading CI.
-- Definitive workflow health (did weekly jobs run green) needs the GitHub Actions UI - not
-  visible from the DB or from this environment (gh not authed locally).
+- sa_13f has no fetch timestamp (see above) - add one so job health is visible from the data.
