@@ -26,15 +26,10 @@ MAX_CHANGES = 15          # circuit breaker: never auto-change more than this in
 WATCHLIST_SOFT_CAP = 40   # over this, flag (don't delete) - too many candidates is noise
 BROAD_HITS = 400          # a keyword tagging more than this is too broad -> flag
 
-# Mandate blacklist - judged on the INDUSTRY/SECTOR classification (the structural fact),
-# NOT loose words in the marketing summary. A company that merely SERVES pharma (e.g. a
-# laser-cleaning machine maker) is not biotech; its industry would say 'Industrials'. This
-# precision matters: a crude summary match falsely flagged LASE (industrial lasers) as pharma.
-BLACK_INDUSTRY = ("biotechnology", "drug manufacturer", "pharmaceutical", "diagnostics & research",
-                  "medical care", "health information", "gene", "therapeutic")
-BLACK_NAME = ("therapeutics", "biosciences", "pharmaceuticals", "biopharma", "cannabis", "oncology")
-CRYPTO = ("bitcoin", "crypto", "blockchain")        # only if it's the core business (industry/name)
-MUSK = ("tesla", "spacex")
+# Mandate blacklist is now THE single exclusion list (tbl_eb_sector_keywords kind='exclude'),
+# applied via the shared fn_eb_excluded DB function - same list the screen and pumps scanner
+# use, so there is no drift. _blacklisted() below calls it. To add an exclusion (tobacco, a new
+# Musk entity, ...) add ONE row to that table; every consumer honours it.
 
 
 DDL = """
@@ -54,26 +49,27 @@ def _live(sym):
         return None  # unknown - don't act on uncertainty
 
 
-def _blacklisted(sym):
-    """Blacklist on the structural classification, not summary words. Returns the reason
-    string if blacklisted, else None. Conservative: only fires on industry/name, so a
-    company that merely SERVES a blacklisted sector is not caught."""
-    try:
-        i = yf.Ticker(sym).info
-    except Exception:
+def _blacklisted(sym, cur):
+    """True-reason if the name is on the single exclusion list, via the shared fn_eb_excluded
+    DB function (same list the screen + pumps use). Returns a reason string or None. Works off
+    our stored fundamentals (the structural classification), so a name that merely SERVES a
+    blacklisted sector is not caught. A name not in fundamentals returns None (can't judge)."""
+    dbex(cur, "SELECT fn_eb_excluded(%s) AS ex", sym)
+    row = cur.fetchone()
+    if not row or not row.ex:
         return None
-    industry = (i.get("industry") or "").lower()
-    name = (i.get("longName") or i.get("shortName") or "").lower()
-    if any(b in industry for b in BLACK_INDUSTRY):
-        return f"industry is '{i.get('industry')}' (mandate blacklist)"
-    if any(b in name for b in BLACK_NAME):
-        return "company name indicates biotech/pharma/cannabis (mandate blacklist)"
-    if any(m in industry or m in name for m in MUSK):
-        return "Musk entity (mandate blacklist)"
-    # crypto only if it's clearly the core business (industry or name), not a passing mention
-    if any(cr in industry for cr in CRYPTO) or any(cr in name for cr in CRYPTO):
-        return "crypto/blockchain core business (mandate blacklist)"
-    return None
+    # find which rule matched, for the audit reason
+    dbex(cur, """SELECT k.match_on, k.keyword FROM tbl_eb_universe u
+                 JOIN tbl_eb_fundamentals f ON f.yf_ticker=u.yf_ticker
+                 JOIN tbl_eb_sector_keywords k ON k.kind='exclude' AND k.active
+                 WHERE u.yf_ticker=%s AND (
+                   (k.match_on='text'     AND (f.summary ILIKE '%%'||k.keyword||'%%' OR f.industry ILIKE '%%'||k.keyword||'%%'))
+                   OR (k.match_on='sector'   AND lower(f.sector)=lower(k.keyword))
+                   OR (k.match_on='industry' AND f.industry ILIKE '%%'||k.keyword||'%%')
+                   OR (k.match_on='name'     AND u.name ILIKE '%%'||k.keyword||'%%'))
+                 LIMIT 1""", sym)
+    m = cur.fetchone()
+    return f"exclusion list: {m.match_on} '{m.keyword}'" if m else "exclusion list (mandate blacklist)"
 
 
 def main():
@@ -106,7 +102,7 @@ def main():
 
     # 2. blacklist creep on non-held watchlist names
     for r in watch:
-        reason = _blacklisted(r.sym)
+        reason = _blacklisted(r.sym, cur)
         if reason:
             removals.append(("watchlist", r.sym, reason))
 

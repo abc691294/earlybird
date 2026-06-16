@@ -381,18 +381,13 @@ def _name_token(name):
 
 def build_matcher(cur):
     """ticker map (all) + established-name token map (cap-gated, largest cap per token).
-    Honours the blacklist: a name whose summary/industry matches an active 'exclude' keyword
-    (tobacco, crypto, cannabis, ...) is dropped, so a figure mentioning e.g. BTI never gets
-    logged as a pump. Same exclude list the screen uses, so the blacklist is consistent."""
+    Honours THE single exclusion list via fn_eb_excluded (tobacco, crypto, cannabis, biotech,
+    Musk, ...), so a figure mentioning e.g. BTI never gets logged as a pump. One list, shared
+    with the screen and the validator - no blacklist drift."""
     dbex(cur, """SELECT u.yf_ticker, u.name, COALESCE(f.market_cap,0) cap
                    FROM tbl_eb_universe u
                    LEFT JOIN tbl_eb_fundamentals f ON f.yf_ticker=u.yf_ticker
-                   WHERE u.active=true
-                     AND NOT EXISTS (
-                       SELECT 1 FROM tbl_eb_sector_keywords k
-                       WHERE k.kind='exclude' AND k.active
-                         AND (f.summary ILIKE '%'||k.keyword||'%'
-                              OR f.industry ILIKE '%'||k.keyword||'%'))""")
+                   WHERE u.active=true AND NOT fn_eb_excluded(u.yf_ticker)""")
     tick_tmp, tok_best = {}, {}
     for r in cur.fetchall():
         yf = r.yf_ticker or ""
