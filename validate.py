@@ -162,6 +162,14 @@ def main():
     if n_watch > WATCHLIST_SOFT_CAP:
         flags.append(("watchlist", "size", f"{n_watch} candidates (> {WATCHLIST_SOFT_CAP}) - prune the weakest"))
 
+    # d) watchlist names with no conviction tier set (priority blank). Tier is a judgement, so
+    # we SURFACE these for classification rather than auto-guessing. Stops blanks accumulating
+    # silently every time a name is added without a tier.
+    dbex(cur, """SELECT sym FROM tbl_eb_watchlist
+                 WHERE active=true AND (priority IS NULL OR priority='')""")
+    for r in cur.fetchall():
+        flags.append((r.sym, "untagged", "no conviction tier set - assign held/lcpullbk/high/watch/spec"))
+
     for target, kind, reason in flags:
         log("flagged", target, kind, reason)
 
