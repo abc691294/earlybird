@@ -610,7 +610,7 @@ def send_policy_alerts(conn):
             if wl:
                 parts.append(html.escape(wl))
         blocks.append("<p>" + "<br>".join(parts) + "</p>")
-    subj = "Trump Policy + Holding: " + ", ".join(sorted(seen))
+    subj = "Policy Beneficiary Alert: " + ", ".join(sorted(seen))
     if not send_alert(subj, "".join(blocks)):
         return []
     dbex(cur, f"UPDATE tbl_eb_policy_signal SET alerted=true WHERE {win}")
@@ -670,7 +670,7 @@ def send_pending_alerts(conn):
                 parts.append(html.escape(wl))
         blocks.append("<p>" + "<br>".join(parts) + "</p>")
     if blocks:
-        subj = "Trump News Alert: " + ", ".join(sorted(names))
+        subj = "Stock Pump Alert: " + ", ".join(sorted(names))
         body = "".join(blocks)
         if not send_alert(subj, body):
             return []  # send failed - leave rows unalerted so it retries next run
