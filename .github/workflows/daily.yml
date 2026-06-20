@@ -39,5 +39,7 @@ jobs:
         run: python theme_radar.py
       - name: Engine-room digest (log only, no email)
         run: python suggest.py
+      - name: Trail pullback floors (ratchet PRICE_BELOW up as a held leader climbs)
+        run: python trail_pullback.py
       - name: Watchlist buying-moment alert (emails only when a watched name triggers)
         run: python watch_alert.py
