@@ -670,7 +670,7 @@ def send_pending_alerts(conn):
                 parts.append(html.escape(wl))
         blocks.append("<p>" + "<br>".join(parts) + "</p>")
     if blocks:
-        subj = "Stock Pump Alert: " + ", ".join(sorted(names))
+        subj = "Stock Pump: " + ", ".join(sorted(names))
         body = "".join(blocks)
         if not send_alert(subj, body):
             return []  # send failed - leave rows unalerted so it retries next run

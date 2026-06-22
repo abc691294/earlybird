@@ -127,30 +127,39 @@ def _score(r, conv):
     return (score if gated else 0), ev
 
 
-def _verdict(r, ev_count, funds):
-    """Plain rule-based verdict per the two rulers. Returns (verdict, reason)."""
+def _verdict(r, ev_count, funds, gated=True):
+    """Plain rule-based verdict per the two rulers. Returns (verdict, reason).
+    A BUY ('Consider buying small') needs a real TIMING trigger this week (gated = a fresh
+    catalyst, fund-buying, or a dip-in-rising-trend) AND a trend that is not still falling.
+    Without a timing reason a good name is 'Watch' - it may be a buy later, just not THIS week.
+    A name still in a downtrend (1m and 3m both negative) is never a buy until the trend turns."""
     off_high = r.range_pct is not None and r.range_pct <= 70
+    falling = (r.mv_1m or 0) < 0 and (r.mv_3m or 0) < 0    # still in a downtrend - wait for it to turn
     if not _is_pioneer(r):
         growing = (r.revenue_growth or 0) >= 0.10
-        if growing and off_high and ev_count >= 2:
-            return "Consider buying small", "profitable, still growing, and not at the top of its range"
+        if growing and off_high and ev_count >= 2 and gated and not falling:
+            return "Consider buying small", "profitable, still growing, off its high, with a reason to act now"
+        if growing and falling:
+            return "Watch", "good business, but the trend is still down - wait for it to turn before buying"
         if growing:
             return "Watch", "good business, but nothing says buy it this week rather than later"
         return "Pass", "an established business that has stopped growing"
     # pioneer ruler - losing money is expected and is NOT a reason to pass
     cash_ok = (r.total_cash or 0) > (r.total_debt or 0)
     backed = bool(funds) or r.last_pub is not None
-    if cash_ok and backed and ev_count >= 2:
-        return "Consider buying small", "early, has believers, and enough cash to keep going"
+    if cash_ok and backed and ev_count >= 2 and gated and not falling:
+        return "Consider buying small", "early, has believers, cash to keep going, and a reason to act now"
+    if cash_ok and falling:
+        return "Watch", "interesting, but the trend is still down - wait for it to turn"
     if cash_ok:
         return "Watch", "interesting but no fresh reason to act this week"
     return "Pass", "more debt than cash - it would need to raise money on someone else's terms"
 
 
-def _card(r, ev, conv):
+def _card(r, ev, conv, gated=True):
     funds = conv.get(r.yf_ticker)
     kind = "Pioneer" if _is_pioneer(r) else "Proven supplier"
-    verdict, because = _verdict(r, len(ev), funds)
+    verdict, because = _verdict(r, len(ev), funds, gated)
     lines = [
         f"<b>{html.escape(r.name or r.yf_ticker)} ({r.yf_ticker}) - {verdict}</b> "
         f"{_linktag(r.yf_ticker)}<br>{html.escape(because[0].upper() + because[1:])}.",
@@ -249,8 +258,27 @@ def section_watchlist(conn, conv):
             signals.append((f"{funds[0]} of the big funds we track now hold it", None))
         if not signals:
             continue
+        # ACTION: every Section 3 name gets a clear action, not just a description.
+        # Buy needs a timing reason (a buying-window dip or a fresh catalyst); a downtrend with no
+        # such reason is Hold; a held name whose trend has broken hard is flagged to review.
+        in_window = (r.mv_1m or 0) <= -10 and (r.mv_6m or 0) > 0
+        fresh_cat = r.last_pub is not None
+        broken = (r.mv_1m or 0) <= -25 and (r.mv_6m or 0) < 0     # hard drop AND trend rolled over
+        if r.held:
+            if in_window or fresh_cat:
+                action, areason = "BUY MORE", ("in the dip-in-a-rising-trend window" if in_window else "on the fresh catalyst")
+            elif broken:
+                action, areason = "REVIEW - trend broken", "down hard and the longer trend has rolled over - check the thesis still holds"
+            else:
+                action, areason = "HOLD", "no action needed this week"
+        else:
+            if in_window or fresh_cat:
+                action, areason = "BUY", ("in the dip-in-a-rising-trend window" if in_window else "on the fresh catalyst")
+            else:
+                action, areason = "WATCH", "no reason to act this week"
         tag = " (held - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
-        body = (f"<b>{html.escape(r.name or r.sym)} ({r.sym})</b>{tag} {_linktag(r.sym)}: "
+        body = (f"<b>{html.escape(r.name or r.sym)} ({r.sym}) - {action}</b>{tag} {_linktag(r.sym)}<br>"
+                f"<i>{html.escape(areason)}.</i> "
                 + "; ".join(html.escape(t) + _alink(u) for t, u in signals) + ".")
         # what's changed in its position - always shown for context
         pos = []
