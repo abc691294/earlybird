@@ -128,7 +128,13 @@ def main():
     if allmode:
         dbex(cur, "SELECT yf_ticker FROM tbl_eb_universe WHERE active=true")
     else:
-        dbex(cur, "SELECT DISTINCT yf_ticker FROM tbl_eb_pool")  # whole pool (strong + medium)
+        # whole pool (strong + medium) PLUS active watchlist names. Watchlist names may not be
+        # pooled (a micro-cap whose stale Yahoo summary doesn't earn a theme keyword - e.g. RFIL
+        # pivoting to AI datacentre). Scraping their news lets the screen catch the real story
+        # from headlines even when the summary lags.
+        dbex(cur, """SELECT DISTINCT yf_ticker FROM tbl_eb_pool
+                     UNION
+                     SELECT sym FROM tbl_eb_watchlist WHERE active=true""")
     tickers = [r.yf_ticker for r in cur.fetchall()]
     dbex(cur, "SELECT yf_ticker, name FROM tbl_eb_universe")
     names = {r.yf_ticker: r.name for r in cur.fetchall()}
