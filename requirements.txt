@@ -1,4 +1,5 @@
 psycopg[binary]>=3.2
 feedparser>=6.0
 yfinance>=0.2
+yahooquery>=2.3
 pandas>=2.0

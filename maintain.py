@@ -18,7 +18,7 @@ and keeps the held/watched names current. Cheap and bounded: 10 names per run.
 """
 import datetime as dt
 from eb_db import get_conn, dbex
-from reenrich import fetch, UPSERT, _is_rate_limit, PACE_FAST
+from reenrich import fetch_batch, UPSERT, _is_rate_limit, PACE_FAST
 import time
 
 BATCH = 10
@@ -67,33 +67,42 @@ def main():
         return
     now = dt.datetime.now(dt.timezone.utc)
     ok = dead = retry = 0
-    for sym in syms:
-        row = fetch(sym)
-        if row[18]:                                   # fetch_ok -> write the data
-            cur.execute(UPSERT, row)
-            # a price-only row with no market_cap AND no industry is an ETF/fund/thin secondary
-            # listing - yfinance has no company fundamentals for it, so it can never enrich
-            # usefully. Mark dead so it stops counting as a gap and the loop stops re-checking it.
-            if not row[3] and not row[16]:            # no market_cap (idx 3) and no industry (idx 16)
-                dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s WHERE yf_ticker=%s", now, sym)
-                dead += 1
+    CHUNK = 200                                       # batched yahooquery fetch - hundreds per call
+    for i in range(0, len(syms), CHUNK):
+        chunk = syms[i:i + CHUNK]
+        try:
+            rows, _rl = fetch_batch(chunk)
+        except Exception as ex:                       # whole-chunk failure -> leave for next run
+            print(f"  chunk {i} error: {str(ex)[:60]}")
+            time.sleep(5)
+            continue
+        for row in rows:
+            sym = row[0]
+            if row[18]:                               # fetch_ok -> write the data
+                cur.execute(UPSERT, row)
+                # a price-only row with no market_cap AND no industry is an ETF/fund/thin secondary
+                # listing - no company fundamentals exist for it, so it can never enrich usefully.
+                # Mark dead so it stops counting as a gap and the loop stops re-checking it.
+                if not row[3] and not row[16]:        # no market_cap (idx 3) and no industry (idx 16)
+                    dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s WHERE yf_ticker=%s", now, sym)
+                    dead += 1
+                else:
+                    dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s WHERE yf_ticker=%s", now, sym)
+                    ok += 1
             else:
-                dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s WHERE yf_ticker=%s", now, sym)
-                ok += 1
-        else:
-            note = row[19] or ""
-            if _is_dead_note(note) and not _is_rate_limit(note):
-                # 404 / unresolvable -> mark dead, never check again
-                dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s, fetch_note=%s WHERE yf_ticker=%s",
-                     now, note[:200], sym)
-                dead += 1
-            else:
-                # transient (rate-limit/timeout/other) -> stamp checked, leave in the loop
-                dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s, fetch_note=%s WHERE yf_ticker=%s",
-                     now, note[:200], sym)
-                retry += 1
+                note = row[19] or ""
+                if _is_dead_note(note) and not _is_rate_limit(note):
+                    # 404 / unresolvable -> mark dead, never check again
+                    dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s, fetch_note=%s WHERE yf_ticker=%s",
+                         now, note[:200], sym)
+                    dead += 1
+                else:
+                    # transient (rate-limit/timeout/other) -> stamp checked, leave in the loop
+                    dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s, fetch_note=%s WHERE yf_ticker=%s",
+                         now, note[:200], sym)
+                    retry += 1
         conn.commit()
-        time.sleep(PACE_FAST)
+        time.sleep(0.5)
     print(f"maintain: checked {len(syms)} | {ok} updated, {dead} newly-dead (won't recheck), {retry} kept to retry")
     conn.close()
 

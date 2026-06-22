@@ -46,6 +46,53 @@ def _n(v):
     return v if isinstance(v, (int, float)) else None
 
 
+def _range_pct(price, lo, hi):
+    return round((price - lo) / (hi - lo) * 100, 2) if (price and lo is not None and hi and hi > lo) else None
+
+
+def fetch_batch(syms):
+    """Fetch fundamentals for a LIST of symbols via one batched yahooquery call set, returning
+    the same row tuples as fetch() (UPSERT column order), one per symbol. Batched module requests
+    hit Yahoo far less than per-ticker yf.Ticker().info (quoteSummary), clearing the backlog in a
+    fraction of the calls. Any symbol Yahoo returns nothing for gets a 'no data' row.
+    Returns (rows, rate_limited_count)."""
+    from yahooquery import Ticker
+    tq = Ticker(syms, asynchronous=True)
+    prof = tq.asset_profile      # sector, industry, longBusinessSummary
+    summ = tq.summary_detail     # marketCap, fiftyTwoWeek*, forwardPE, trailingPE
+    fin = tq.financial_data      # revenueGrowth, margins, target, cash, debt
+    price = tq.price             # regularMarketPrice, currency
+
+    def g(d, sym, key):
+        v = d.get(sym) if isinstance(d, dict) else None
+        return v.get(key) if isinstance(v, dict) else None
+
+    rows, rl = [], 0
+    for s in syms:
+        px = _n(g(price, s, "regularMarketPrice"))
+        cap = g(summ, s, "marketCap")
+        lo = _n(g(summ, s, "fiftyTwoWeekLow")); hi = _n(g(summ, s, "fiftyTwoWeekHigh"))
+        ok = bool(cap or px)
+        if not ok:
+            blobs = [str(d.get(s)).lower() for d in (prof, summ, fin, price) if isinstance(d, dict) and isinstance(d.get(s), str)]
+            note = "RATE LIMIT" if any("too many" in b or "rate limit" in b for b in blobs) else "no data"
+            if note == "RATE LIMIT":
+                rl += 1
+            rows.append(_row(s, ok=False, note=note))
+            continue
+        rows.append((
+            s, px, g(price, s, "currency"), int(cap) if cap else None, lo, hi, _range_pct(px, lo, hi),
+            _n(g(summ, s, "forwardPE")), _n(g(summ, s, "trailingPE")),
+            _n(g(fin, s, "revenueGrowth")), _n(g(fin, s, "grossMargins")), _n(g(fin, s, "profitMargins")),
+            _n(g(fin, s, "targetMeanPrice")),
+            int(g(fin, s, "totalCash")) if _n(g(fin, s, "totalCash")) else None,
+            int(g(fin, s, "totalDebt")) if _n(g(fin, s, "totalDebt")) else None,
+            g(prof, s, "sector"), g(prof, s, "industry"),
+            (g(prof, s, "longBusinessSummary") or "")[:2000] or None,
+            ok, None if ok else "no data"))
+    return rows, rl
+
+
 def fetch(sym):
     try:
         i = yf.Ticker(sym).info
