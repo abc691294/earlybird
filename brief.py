@@ -241,7 +241,7 @@ def section_watchlist(conn, conv):
                  GROUP BY yf_ticker) c ON c.yf_ticker = w.sym
       WHERE w.active = true
       ORDER BY w.held DESC, CASE WHEN w.priority='high' THEN 0 ELSE 1 END, w.sym""")
-    items = []
+    actions, updates = [], []
     for r in cur.fetchall():
         signals = []          # (sentence, article-url-or-None)
         if (r.mv_1m or 0) <= -10 and (r.mv_6m or 0) > 0:
@@ -294,8 +294,14 @@ def section_watchlist(conn, conv):
             body += f"<br><i>Position: {html.escape(', '.join(pos))}.</i>"
         if r.triggers and any("buying window" in t for t, _u in signals):
             body += f"<br>Our trigger notes for it: {html.escape(_first_sentence(r.triggers))}"
-        items.append(f"<p style=\"{P}\">{body}</p>")
-    return items
+        item = f"<p style=\"{P}\">{body}</p>"
+        # 3.1 Actions = needs a decision this week (buy / buy more / sell-review).
+        # 3.2 Watchlist updates = everything else (hold, notable move, news worth knowing).
+        if action in ("BUY", "BUY MORE", "SELL", "REVIEW - trend broken"):
+            actions.append(item)
+        else:
+            updates.append(item)
+    return actions, updates
 
 
 # which figure pumped it -> plain label for the brief
@@ -398,7 +404,7 @@ def build_and_send(conn):
         conv = {}
 
     cards, rec = section_candidates(conn, conv)
-    watch = section_watchlist(conn, conv)
+    wl_actions, wl_updates = section_watchlist(conn, conv)
     pumps = section_pumps(conn)
     choke = section_chokepoints(conn)
     radar = section_radar(conn)
@@ -424,10 +430,22 @@ def build_and_send(conn):
                      "not failing.</p>")
 
     parts.append(f"<p style=\"{H}\">3. Holdings and watchlist</p>")
-    if watch:
-        parts.extend(watch)
+
+    parts.append(f"<p style=\"{H}\">3.1 Actions</p>")
+    if wl_actions:
+        parts.append(f"<p style=\"{P}\"><i>Names that need a decision this week - buy, add, or "
+                     "review for selling. Each says why.</i></p>")
+        parts.extend(wl_actions)
     else:
-        parts.append(f"<p style=\"{P}\">No name we hold or watch needs attention this week.</p>")
+        parts.append(f"<p style=\"{P}\">Nothing to act on this week.</p>")
+
+    parts.append(f"<p style=\"{H}\">3.2 Watchlist updates</p>")
+    if wl_updates:
+        parts.append(f"<p style=\"{P}\"><i>Names we hold or watch with notable news or moves, but "
+                     "no action needed - for your information.</i></p>")
+        parts.extend(wl_updates)
+    else:
+        parts.append(f"<p style=\"{P}\">No other updates this week.</p>")
 
     if pumps:
         parts.append(f"<p style=\"{H}\">Stock pumps - companies a big name has backed (7 days, dates checked)</p>")
