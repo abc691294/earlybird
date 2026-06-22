@@ -57,11 +57,27 @@ def pick(conn, n=BATCH):
     return [r.yf_ticker for r in cur.fetchall()]
 
 
+def pick_all(conn):
+    """EVERY active, non-dead name - a full-universe refresh (weekly), so enriched names that
+    aren't on the watchlist don't go stale. Cheap now that fetch is batched. Stalest first."""
+    cur = conn.cursor()
+    dbex(cur, """SELECT u.yf_ticker FROM tbl_eb_universe u
+                 JOIN tbl_eb_fundamentals f ON f.yf_ticker = u.yf_ticker
+                 WHERE u.active AND f.dead = false
+                 ORDER BY f.last_checked ASC NULLS FIRST""")
+    return [r.yf_ticker for r in cur.fetchall()]
+
+
 def main():
     import sys
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else BATCH
+    args = sys.argv[1:]
+    full = "--all" in args
+    nums = [a for a in args if a.isdigit()]
+    n = int(nums[0]) if nums else BATCH
     conn = get_conn(); cur = conn.cursor()
-    syms = pick(conn, n)
+    syms = pick_all(conn) if full else pick(conn, n)
+    if full:
+        print(f"maintain --all: full-universe refresh of {len(syms)} active names")
     if not syms:
         print("maintain: nothing to check (all enriched or dead)")
         return

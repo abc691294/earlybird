@@ -20,7 +20,16 @@ cd /d "C:\Users\sbrow\OneDrive\Claude\projects\earlybird_repo"
 copy /Y "..\Stock Research\secrets.json" "secrets.json" >nul
 python build_universe.py >> %LOG% 2>&1
 set RC=%errorlevel%
+
+REM 3. full-universe fundamentals refresh (batched yahooquery - ~15 min for the whole universe).
+REM Keeps enriched non-watchlist names from going stale; also fills the new names just added.
+python maintain.py --all >> %LOG% 2>&1
+set RCE=%errorlevel%
+
+REM 4. rebuild the pool off the fresh fundamentals
+python pool.py >> %LOG% 2>&1
+
 del /Q "secrets.json" >nul 2>&1
 
-echo Universe refresh finished %DATE% %TIME% (build rc=%RC%) >> %LOG%
+echo Universe refresh finished %DATE% %TIME% (build rc=%RC% enrich rc=%RCE%) >> %LOG%
 exit /b %RC%
