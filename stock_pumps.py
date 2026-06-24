@@ -312,7 +312,8 @@ INSERT INTO tbl_eb_pump_news (figure,source,title,link,published,matched_ticker,
   ON CONFLICT (guid, matched_ticker) DO NOTHING
 """
 
-_STOP = {"trump","stock","stocks","shares","company","group","global","market","markets",
+_STOP = {"trump","stock","stocks","shares","company","companies","group","global","market","markets",
+         "solutions","services","products","brands","enterprises","incorporated","limited",
          "first","united","american","america","national","corp","holdings","technologies",
          "technology","systems","industries","international","capital","financial","energy",
          "media","news","power","motors","electric","digital","health","world","value",
@@ -384,7 +385,9 @@ def build_matcher(cur):
     Honours THE single exclusion list via fn_eb_excluded (tobacco, crypto, cannabis, biotech,
     Musk, ...), so a figure mentioning e.g. BTI never gets logged as a pump. One list, shared
     with the screen and the validator - no blacklist drift."""
-    dbex(cur, """SELECT u.yf_ticker, u.name, COALESCE(f.market_cap,0) cap
+    dbex(cur, """SELECT u.yf_ticker, u.name, COALESCE(f.market_cap,0) cap,
+                        (EXISTS (SELECT 1 FROM tbl_eb_pool p WHERE p.yf_ticker=u.yf_ticker)
+                         OR EXISTS (SELECT 1 FROM tbl_eb_watchlist w WHERE w.sym=u.yf_ticker AND w.active)) on_brief
                    FROM tbl_eb_universe u
                    LEFT JOIN tbl_eb_fundamentals f ON f.yf_ticker=u.yf_ticker
                    WHERE u.active=true AND NOT fn_eb_excluded(u.yf_ticker)""")
@@ -397,7 +400,10 @@ def build_matcher(cur):
             ex = tick_tmp.get(base)
             if ex is None or (is_us and not ex[2]):      # prefer the US listing on a base collision
                 tick_tmp[base] = (yf, r.name, is_us)     # (TKO -> TKO Group US, not TKO.PA Tikehau)
-        if (r.cap or 0) >= EST_CAP and "." not in yf:    # established US names only, by NAME
+        # name-token match ONLY for on-brief names (pool or watchlist). A $50B off-mandate name
+        # (TJX retail) must not become matchable by a generic word in its name, or it gets falsely
+        # tied to unrelated Trump/oil headlines.
+        if (r.cap or 0) >= EST_CAP and "." not in yf and r.on_brief:
             tok = _name_token(r.name)
             if tok:
                 prev = tok_best.get(tok)
