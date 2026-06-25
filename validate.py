@@ -159,7 +159,7 @@ def main():
     # c) watchlist MOVERS - the triage signal. A long watchlist is fine; what matters is
     # surfacing the names that CHANGED this week (moved hard, or got a fresh catalyst), so the
     # high-conviction/actionable ones don't blur into the tail. Not "prune", but "look at these".
-    # Surface the genuinely notable: a BIG move (>=30%), OR a fresh catalyst on a HIGH-conviction
+    # Surface the genuinely notable: a BIG move (>=20%), OR a fresh catalyst on a HIGH-conviction
     # /held name (where a catalyst actually matters to a decision). Keeps the signal sharp rather
     # than tripping on every volatile micro-cap wobble.
     dbex(cur, """SELECT w.sym, w.priority, w.held, m.mv_1m,
@@ -168,13 +168,13 @@ def main():
                  FROM tbl_eb_watchlist w
                  LEFT JOIN tbl_eb_moves m ON m.yf_ticker=w.sym
                  WHERE w.active=true
-                   AND (abs(COALESCE(m.mv_1m,0)) >= 30
+                   AND (abs(COALESCE(m.mv_1m,0)) >= 20
                         OR ((w.priority='high' OR w.held)
                             AND EXISTS (SELECT 1 FROM tbl_eb_news n WHERE n.yf_ticker=w.sym
                                         AND n.catalyst AND n.published >= now() - interval '7 days')))""")
     for r in cur.fetchall():
         bits = []
-        if r.mv_1m is not None and abs(r.mv_1m) >= 30:
+        if r.mv_1m is not None and abs(r.mv_1m) >= 20:
             bits.append(f"{r.mv_1m:+.0f}% this month")
         if r.fresh_cat and (r.priority == "high" or r.held):
             bits.append(f"{r.fresh_cat} fresh catalyst headline(s)")
