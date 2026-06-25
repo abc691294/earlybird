@@ -30,6 +30,13 @@ CATALYST_TYPES = {
                  "defense production", "government investment", "grant", "subsid", "export control",
                  "sanction", "tariff", "national security"],
  "milestone": ["milestone", "breakthrough", "approval", "certification", "qualifies", "first revenue"],
+ # a genuine FUNDAMENTAL inflection (not routine reporting) - catches a turnaround the stale Yahoo
+ # summary misses (e.g. RFIL's margin-led return to profit). These OVERRIDE the earnings-noise
+ # suppression below; routine 'earnings call/transcript' on its own stays noise.
+ "earnings": ["return to profit", "returns to profit", "swings to profit", "back to profit",
+              "margin expansion", "margin rebound", "margin-led", "record bookings", "record backlog",
+              "record revenue", "revenue surge", "raises guidance", "beats estimates", "tops estimates",
+              "blowout quarter", "accelerating growth"],
 }
 # suppress: commentary templates AND analyst-opinion (not company events)
 NOISE = ["valuation", "a look at", "vs other", "rundown", "should you buy", "looks very risky",
@@ -106,12 +113,19 @@ def flag(title, name=None, ticker=None):
     """(flag, matched_terms, catalyst_type). Requires the company itself in the headline
     (kills peer cross-tags); fires only on BUSINESS-EVENT types, suppresses analyst/commentary."""
     t = (title or "").lower()
-    if any(n in t for n in NOISE):
+    # a real fundamental inflection (margin turn, return to profit, record bookings) OVERRIDES the
+    # earnings-noise suppression - 'earnings call' alone is noise, but 'margin-led growth' is signal.
+    has_inflection = any(x in t for x in CATALYST_TYPES["earnings"])
+    if not has_inflection and any(n in t for n in NOISE):
         return 0, None, None
     if name is not None or ticker is not None:
         tok = _name_token(name)
-        if not ((tok and tok in t) or _ticker_in_title(title, ticker)):
-            return 0, None, None  # article isn't about THIS company
+        # Reject as a peer cross-tag ONLY when the company HAS a usable token (so a peer could
+        # share it) yet neither the token nor the ticker is in the title. A name with no usable
+        # token (short/stoppy, e.g. 'RF Industries') came from its OWN per-ticker feed, so trust
+        # it - rejecting threw away legit own-company catalysts (RFIL's record bookings).
+        if tok and not (tok in t or _ticker_in_title(title, ticker)):
+            return 0, None, None  # has a token but article isn't about THIS company (peer)
     matched, typ = [], None
     for ty, terms in CATALYST_TYPES.items():
         for x in terms:
