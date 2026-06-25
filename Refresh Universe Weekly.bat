@@ -16,8 +16,9 @@ if errorlevel 1 (
 )
 
 REM 2. rebuild the Supabase universe from the fresh cache (needs secrets.json present)
-cd /d "C:\Users\sbrow\OneDrive\Claude\projects\earlybird_repo"
-copy /Y "..\Stock Research\secrets.json" "secrets.json" >nul
+REM earlybird_repo now lives inside Stock Research, so secrets.json is one level up.
+cd /d "C:\Users\sbrow\OneDrive\Claude\projects\Stock Research\earlybird_repo"
+copy /Y "..\secrets.json" "secrets.json" >nul
 python build_universe.py >> %LOG% 2>&1
 set RC=%errorlevel%
 
