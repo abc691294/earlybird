@@ -23,7 +23,7 @@ import yfinance as yf
 from eb_db import get_conn, dbex
 
 MAX_CHANGES = 15          # circuit breaker: never auto-change more than this in one run
-WATCHLIST_SOFT_CAP = 40   # over this, flag (don't delete) - too many candidates is noise
+# (no watchlist size cap - a long watchlist is fine; the job is to surface the MOVERS, not prune)
 BROAD_HITS = 400          # a keyword tagging more than this is too broad -> flag
 
 # Mandate blacklist is now THE single exclusion list (tbl_eb_sector_keywords kind='exclude'),
@@ -156,11 +156,30 @@ def main():
         if n > BROAD_HITS:
             flags.append((kw, "keyword", f"too broad: matches {n} companies (> {BROAD_HITS})"))
 
-    # c) watchlist over soft cap
-    dbex(cur, "SELECT COUNT(*) n FROM tbl_eb_watchlist WHERE active=true AND held=false")
-    n_watch = cur.fetchone().n
-    if n_watch > WATCHLIST_SOFT_CAP:
-        flags.append(("watchlist", "size", f"{n_watch} candidates (> {WATCHLIST_SOFT_CAP}) - prune the weakest"))
+    # c) watchlist MOVERS - the triage signal. A long watchlist is fine; what matters is
+    # surfacing the names that CHANGED this week (moved hard, or got a fresh catalyst), so the
+    # high-conviction/actionable ones don't blur into the tail. Not "prune", but "look at these".
+    # Surface the genuinely notable: a BIG move (>=30%), OR a fresh catalyst on a HIGH-conviction
+    # /held name (where a catalyst actually matters to a decision). Keeps the signal sharp rather
+    # than tripping on every volatile micro-cap wobble.
+    dbex(cur, """SELECT w.sym, w.priority, w.held, m.mv_1m,
+                        (SELECT count(*) FROM tbl_eb_news n WHERE n.yf_ticker=w.sym
+                         AND n.catalyst AND n.published >= now() - interval '7 days') fresh_cat
+                 FROM tbl_eb_watchlist w
+                 LEFT JOIN tbl_eb_moves m ON m.yf_ticker=w.sym
+                 WHERE w.active=true
+                   AND (abs(COALESCE(m.mv_1m,0)) >= 30
+                        OR ((w.priority='high' OR w.held)
+                            AND EXISTS (SELECT 1 FROM tbl_eb_news n WHERE n.yf_ticker=w.sym
+                                        AND n.catalyst AND n.published >= now() - interval '7 days')))""")
+    for r in cur.fetchall():
+        bits = []
+        if r.mv_1m is not None and abs(r.mv_1m) >= 30:
+            bits.append(f"{r.mv_1m:+.0f}% this month")
+        if r.fresh_cat and (r.priority == "high" or r.held):
+            bits.append(f"{r.fresh_cat} fresh catalyst headline(s)")
+        if bits:
+            flags.append((r.sym, "mover", "watchlist name changed - " + ", ".join(bits)))
 
     # d) watchlist names with no conviction tier set (priority blank). Tier is a judgement, so
     # we SURFACE these for classification rather than auto-guessing. Stops blanks accumulating
