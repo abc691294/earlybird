@@ -163,8 +163,22 @@ def wave_text(label, ticker, interval):
         return f"{label}: {zone}, last signal - {sig}{datepart}"
     except Exception:
         return None
-# a Trump position-taking (BUY-tier) mention is the high-conviction alert trigger
-_BUYTIER = ("bought", "stake", "disclos", "invest", "acquir")
+# the high-conviction alert trigger. Originally just position-TAKING (Trump bought a stake),
+# but the scanner now also covers ENDORSEMENTS (a figure saying 'buy X'), so the list must catch
+# both. Missing 'buy' meant 'Trump says BUY Nokia' - the strongest possible signal - never fired
+# (only a weak 'investment' headline did). Endorsement verbs added.
+# Long stems are safe as substrings; short ambiguous ones ('buy' must not hit 'buyback'/'buyer')
+# match as a whole word via a boundary regex.
+_BUYTIER = ("bought", "stake", "disclos", "invest", "acquir", "endorse", "prais", "tout")
+_BUYTIER_WORD = ("buy", "buys", "backs", "backed")     # whole-word only
+
+
+def _buytier_sql(col="title"):
+    """SQL boolean: a buy-tier endorsement/position term in `col`. Substring for long stems,
+    whole-word (Postgres \\m..\\M) for short ambiguous ones so 'buy' != 'buyback'."""
+    subs = [f"{col} ILIKE '%{k}%'" for k in _BUYTIER]
+    words = [f"{col} ~* '\\m{k}\\M'" for k in _BUYTIER_WORD]
+    return "(" + " OR ".join(subs + words) + ")"
 
 
 def send_alert(subject, body):
@@ -539,9 +553,8 @@ INSERT INTO tbl_eb_policy_signal (source,theme,policy_title,link,published,ticke
 def trump_holdings(conn):
     """His disclosed buys, derived from our OWN BUY-tier rows (self-maintaining list)."""
     cur = conn.cursor()
-    buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
     dbex(cur, f"SELECT DISTINCT matched_ticker FROM tbl_eb_pump_news "
-                f"WHERE in_universe=true AND ({buy_like})")
+                f"WHERE in_universe=true AND {_buytier_sql()}")
     return {r.matched_ticker for r in cur.fetchall()}
 
 
@@ -629,8 +642,7 @@ def send_pending_alerts(conn):
     with the company name + link. Marks rows alerted only on successful send. Returns the
     list of alerted tickers (reusable: called by main and for manual resends)."""
     cur = conn.cursor()
-    buy_like = " OR ".join(f"title ILIKE '%{k}%'" for k in _BUYTIER)
-    where = (f"in_universe=true AND sentiment='positive' AND alerted=false AND ({buy_like}) "
+    where = (f"in_universe=true AND sentiment='positive' AND alerted=false AND {_buytier_sql()} "
              f"AND published >= (now() - interval '2 days')")
     dbex(cur, f"SELECT matched_ticker, matched_name, title, link FROM tbl_eb_pump_news WHERE {where}")
     rows = cur.fetchall()
