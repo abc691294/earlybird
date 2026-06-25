@@ -133,21 +133,29 @@ def _verdict(r, ev_count, funds, gated=True):
     catalyst, fund-buying, or a dip-in-rising-trend) AND a trend that is not still falling.
     Without a timing reason a good name is 'Watch' - it may be a buy later, just not THIS week.
     A name still in a downtrend (1m and 3m both negative) is never a buy until the trend turns."""
-    off_high = r.range_pct is not None and r.range_pct <= 70
+    # A high (top of its range) is NOT a blocker - the strongest names live near their highs and
+    # momentum is real. The real risk is a PARABOLIC run with no fundamental backing (a thin move
+    # on hype). So: a buy needs growth + a real catalyst (gated) + an up trend. At-high is fine if
+    # the run is backed; we just describe the entry (strength vs off-high) rather than gate on it.
     falling = (r.mv_1m or 0) < 0 and (r.mv_3m or 0) < 0    # still in a downtrend - wait for it to turn
+    at_high = r.range_pct is not None and r.range_pct >= 85
+    parabolic_unbacked = (r.mv_3m or 0) >= 60 and (r.revenue_growth or 0) < 0.15   # big move, weak growth
     if not _is_pioneer(r):
         growing = (r.revenue_growth or 0) >= 0.10
-        if growing and off_high and ev_count >= 2 and gated and not falling:
-            return "Consider buying small", "profitable, still growing, off its high, with a reason to act now"
+        entry = "buying into strength" if at_high else "off its high"
+        if growing and ev_count >= 2 and gated and not falling and not parabolic_unbacked:
+            return "Consider buying small", f"profitable, still growing, {entry}, with a reason to act now"
         if growing and falling:
             return "Watch", "good business, but the trend is still down - wait for it to turn before buying"
+        if growing and parabolic_unbacked:
+            return "Watch", "ran hard on thin fundamentals - let it prove the growth before buying"
         if growing:
             return "Watch", "good business, but nothing says buy it this week rather than later"
         return "Pass", "an established business that has stopped growing"
     # pioneer ruler - losing money is expected and is NOT a reason to pass
     cash_ok = (r.total_cash or 0) > (r.total_debt or 0)
     backed = bool(funds) or r.last_pub is not None
-    if cash_ok and backed and ev_count >= 2 and gated and not falling:
+    if cash_ok and backed and ev_count >= 2 and gated and not falling and not parabolic_unbacked:
         return "Consider buying small", "early, has believers, cash to keep going, and a reason to act now"
     if cash_ok and falling:
         return "Watch", "interesting, but the trend is still down - wait for it to turn"
