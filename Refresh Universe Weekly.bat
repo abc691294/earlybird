@@ -15,10 +15,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM 2. rebuild the Supabase universe from the fresh cache (needs secrets.json present)
-REM earlybird_repo now lives inside Stock Research, so secrets.json is one level up.
+REM 2. rebuild the Supabase universe from the fresh cache. DB creds come from the local .env
+REM (read in place by eb_db.py) - no secrets.json copy/delete needed.
 cd /d "C:\Users\sbrow\OneDrive\Claude\projects\Stock Research\earlybird_repo"
-copy /Y "..\secrets.json" "secrets.json" >nul
 python build_universe.py >> %LOG% 2>&1
 set RC=%errorlevel%
 
@@ -29,8 +28,6 @@ set RCE=%errorlevel%
 
 REM 4. rebuild the pool off the fresh fundamentals
 python pool.py >> %LOG% 2>&1
-
-del /Q "secrets.json" >nul 2>&1
 
 echo Universe refresh finished %DATE% %TIME% (build rc=%RC% enrich rc=%RCE%) >> %LOG%
 exit /b %RC%

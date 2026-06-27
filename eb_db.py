@@ -1,15 +1,40 @@
 """
 eb_db.py - Postgres (Supabase) connection for the cloud EarlyBird jobs.
 
-Connection comes from env vars (GitHub Actions Secrets) or, locally, a 'supabase' block
-in secrets.json (gitignored). Rows use namedtuple_row so `row.col` attribute access works
-the same as the old pyodbc code. Session timezone pinned to UTC.
+Connection comes from env vars in this order:
+  1. already-set env vars (GitHub Actions Secrets in the cloud)
+  2. a local .env file (SUPABASE_* lines) - loaded here at import, read IN PLACE (never copied
+     or deleted, so no copy-then-rm dance - this is the safe local path)
+  3. fallback: a 'supabase' block in secrets.json (legacy; still works if no .env)
+Rows use namedtuple_row so `row.col` works. Session timezone pinned to UTC.
 """
 import os
 import json
 from pathlib import Path
 import psycopg
 from psycopg.rows import namedtuple_row
+
+
+def _load_dotenv():
+    """Load a local .env (KEY=VALUE lines) into os.environ WITHOUT overwriting already-set vars
+    (so cloud env vars win). Looks in the repo dir and one level up. Tiny stdlib parser - no
+    python-dotenv dependency. Read in place: nothing is copied or deleted."""
+    here = Path(__file__).resolve().parent
+    for envp in (here / ".env", here.parent / ".env"):
+        if not envp.exists():
+            continue
+        for line in envp.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = val
+        break   # first .env found wins
+
+
+_load_dotenv()
 
 
 def _cfg():
