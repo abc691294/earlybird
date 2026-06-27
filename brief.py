@@ -312,6 +312,34 @@ def section_watchlist(conn, conv):
     return actions, updates
 
 
+def section_inbound(conn):
+    """Names Claude Trades flagged on price action this week + what EarlyBird's auto-research
+    concluded. Cross-engine: a name on-brief in EarlyBird AND strong-trend in Claude Trades is the
+    sharpest signal; a CT name EarlyBird finds off-brief is flagged as a trade-portfolio idea, not
+    an EarlyBird one. All are 'confirm' - the deep catalyst pass happens when you greenlight."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """SELECT yf_ticker, growth_score, portfolio, status, eb_verdict
+                     FROM tbl_eb_inbound
+                     WHERE researched_on >= now() - interval '8 days' AND status <> 'dup'
+                     ORDER BY (status='researched') DESC, growth_score DESC NULLS LAST LIMIT 12""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"inbound section unavailable: {ex}")
+        return []
+    if not rows:
+        return []
+    out = []
+    for r in rows:
+        tag = "on-brief - auto-watchlisted" if r.status == "researched" else "off-brief - trade idea only"
+        sc = f"growth_score {r.growth_score:.1f}" if r.growth_score is not None else ""
+        pf = f", Portfolio {r.portfolio}" if r.portfolio else ""
+        out.append(f"<p style=\"{P}\"><b>{html.escape(r.yf_ticker)}</b> "
+                   f"({html.escape(sc)}{html.escape(pf)}) - {html.escape(tag)}. "
+                   f"<i>{html.escape((r.eb_verdict or '')[:160])}</i> {_linktag(r.yf_ticker)}</p>")
+    return out
+
+
 # which figure pumped it -> plain label for the brief
 _FIG_LABEL = {"trump": "Trump", "huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella",
               "pichai": "Google/Pichai", "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg",
@@ -416,6 +444,7 @@ def build_and_send(conn):
     pumps = section_pumps(conn)
     choke = section_chokepoints(conn)
     radar = section_radar(conn)
+    inbound = section_inbound(conn)
     selfcheck = section_selfcheck(conn)
 
     today = dt.date.today().strftime("%d/%m/%Y")
@@ -472,6 +501,14 @@ def build_and_send(conn):
                      "don't yet track as a theme. Possible next waves. None is acted on - they're "
                      "here for you to say whether any is worth following.</i></p>")
         parts.extend(radar)
+
+    if inbound:
+        parts.append(f"<p style=\"{H}\">From Claude Trades - price-action picks, cross-checked</p>")
+        parts.append(f"<p style=\"{P}\"><i>Names the Claude Trades engine surfaced on price action "
+                     "(strong growth trend), auto-checked against EarlyBird. 'On-brief' = both engines "
+                     "agree, auto-watchlisted - confirm it. 'Off-brief' = a good trend but not future-tech, "
+                     "a trade-portfolio idea not an EarlyBird one.</i></p>")
+        parts.extend(inbound)
 
     if selfcheck:
         parts.append(f"<p style=\"{H}\">Self-check - what the engine cleaned or flagged this week</p>")

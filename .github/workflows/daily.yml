@@ -25,6 +25,8 @@ jobs:
         run: python maintain.py 800
       - name: Pool refresh (screen)
         run: python pool.py
+      - name: Inbound (auto-research tickers Claude Trades pushed on price action)
+        run: python inbound.py
       - name: Self-validate (remove junk, flag off-brief drift - keeps the engine honest)
         run: python validate.py
       - name: Sector RSS
