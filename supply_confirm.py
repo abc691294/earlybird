@@ -44,10 +44,14 @@ def main():
     up, down = args[0].upper(), args[1].upper()
 
     if drop:
+        # Drop a DISCOVERED link (candidate OR an auto-confirmed one that turned out off-brief).
+        # Discovered links carry 'from news' in the note; hand-seeded links never do, so they are
+        # never deleted by this tool. This lets you undo a bad auto-confirm with one command.
         dbex(cur, """DELETE FROM tbl_eb_supply_link
-                     WHERE source='discover-candidate' AND upper(upstream)=%s AND upper(downstream)=%s""",
+                     WHERE note LIKE '%%from news%%'
+                       AND upper(upstream)=%s AND upper(downstream)=%s""",
              up, down)
-        msg = "dropped" if cur.rowcount else "no matching candidate"
+        msg = "dropped" if cur.rowcount else "no matching discovered link"
     else:
         dbex(cur, """UPDATE tbl_eb_supply_link SET source='auto'
                      WHERE source='discover-candidate' AND upper(upstream)=%s AND upper(downstream)=%s""",
