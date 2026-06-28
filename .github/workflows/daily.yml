@@ -15,6 +15,7 @@ jobs:
       GMAIL_USER: ${{ secrets.GMAIL_USER }}
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       GMAIL_RECIPIENT: ${{ secrets.GMAIL_RECIPIENT }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +34,8 @@ jobs:
         run: python sector_news.py
       - name: Ticker news
         run: python news_scrape.py
+      - name: Supply-chain discovery (weekly self-gated; proposes supplier->customer links from news)
+        run: python supply_discover.py
       - name: Move detector
         run: python move_scan.py
       - name: Stock pumps scan (Trump + Huang + hyperscaler CEOs + Altman + Su)

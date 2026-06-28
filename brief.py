@@ -410,6 +410,33 @@ def section_radar(conn):
     return out
 
 
+def section_supply(conn):
+    """New supplier->customer links the engine auto-discovered from the news feed that need your
+    eye. The clear-cut ones (both ends already on-brief) are auto-confirmed silently and added to
+    the map - these are the BORDERLINE ones (one end off-brief or unpooled) left for you to keep or
+    drop. Propose-you-decide, same as the theme radar. To confirm: python supply_confirm.py UP DOWN.
+    To drop: python supply_confirm.py --drop UP DOWN. Doing nothing leaves it a candidate (read but
+    flagged), so silence is safe."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """SELECT theme, upstream, downstream, upstream_name, role
+                     FROM tbl_eb_supply_link
+                     WHERE source = 'discover-candidate' AND added_on >= now() - interval '10 days'
+                     ORDER BY theme, upstream LIMIT 12""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"supply discovery section unavailable: {ex}"); return []
+    out = []
+    for r in rows:
+        nm = r.upstream_name or r.upstream
+        out.append(f"<p style=\"{P}\"><b>{html.escape(r.upstream)}</b> "
+                   f"({html.escape(nm)}) <b>&rarr; feeds {html.escape(r.downstream)}</b> "
+                   f"[{html.escape(r.theme)}]: {html.escape(r.role or 'supplies it')}. "
+                   f"<i>confirm:</i> <code>supply_confirm.py {html.escape(r.upstream)} "
+                   f"{html.escape(r.downstream)}</code> {_linktag(r.upstream)}</p>")
+    return out
+
+
 def section_selfcheck(conn):
     """What the daily self-validate did this week - removals (junk pruned) and flags
     (things needing your eye). Keeps the autonomous engine honest and visible."""
@@ -444,6 +471,7 @@ def build_and_send(conn):
     pumps = section_pumps(conn)
     choke = section_chokepoints(conn)
     radar = section_radar(conn)
+    supply = section_supply(conn)
     inbound = section_inbound(conn)
     selfcheck = section_selfcheck(conn)
 
@@ -501,6 +529,14 @@ def build_and_send(conn):
                      "don't yet track as a theme. Possible next waves. None is acted on - they're "
                      "here for you to say whether any is worth following.</i></p>")
         parts.extend(radar)
+
+    if supply:
+        parts.append(f"<p style=\"{H}\">Supply chain - new links found in the news, for your eye</p>")
+        parts.append(f"<p style=\"{P}\"><i>The engine reads the news for who-supplies-whom and maps it "
+                     "automatically. Clear-cut links (both ends already on-brief) are added without "
+                     "asking. These are the borderline ones - one end is off-brief or new - kept or "
+                     "dropped by you. Doing nothing is fine: they stay flagged, not trusted.</i></p>")
+        parts.extend(supply)
 
     if inbound:
         parts.append(f"<p style=\"{H}\">From Claude Trades - price-action picks, cross-checked</p>")

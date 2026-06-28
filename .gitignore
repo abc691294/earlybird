@@ -4,3 +4,4 @@ __pycache__/
 _trump_hourly.log
 *.log
 .env
+backups/
