@@ -377,10 +377,14 @@ def sentiment(title):
     t = title or ""
     if _HOLD.search(t):  # explicit "don't buy / wait" overrides any positive verb -> not a pump
         return "neutral"
-    if _POS.search(t):   # price/Trump-favourable language present -> positive
-        return "positive"
+    # CRASH/negative language OVERRIDES positive. A plunging stock is NOT a pump even if the
+    # headline also says 'stake'/'deal'/'invest' (e.g. "DJT plunge erases $766M from Trump's
+    # STAKE" - 'plunge' wins, not 'stake'). NEG was being beaten by POS-checked-first - the bug
+    # that tagged JPM/QS/DJT crash stories positive. Check NEG before POS.
     if _NEG.search(t):
         return "negative"
+    if _POS.search(t):   # price/Trump-favourable language present -> positive
+        return "positive"
     return "neutral"
 
 
