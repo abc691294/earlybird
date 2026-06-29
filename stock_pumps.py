@@ -350,7 +350,12 @@ _POS = re.compile(r"\b(prais\w*|tout\w*|hail\w*|back(?:s|ed|ing)|endors\w*|boost
                   r"disclos\w*|buys?|bought|purchas\w*|invest\w*|stake|acquir\w*)\b", re.I)
 _NEG = re.compile(r"\b(slam\w*|blast\w*|attack\w*|criticis\w*|criticiz\w*|threat\w*|prob\w*|"
                   r"lawsuit|sues?|sued|feud|penal\w*|fraud|plung\w*|sink\w*|tumbl\w*|"
-                  r"plummet\w*|crash\w*|warn\w*|ban\b|bans\b)\b", re.I)
+                  r"plummet\w*|crash\w*|warn\w*|ban\b|bans\b|"
+                  # 'weighs heavy/heavily on' - unambiguous single-company drag ('SoftBank stake
+                  # weighs heavy as shares shed 16%'). Deliberately NOT adding shed/slump/slide:
+                  # those have bullish counter-uses (buy-back, 'bought the slump') + appear in
+                  # oil/market-wrap noise, so a blanket rule causes false negatives.
+                  r"weighs? heav(?:y|ily))\b", re.I)
 # don't-buy / wait language - a figure can say "I like it BUT don't buy yet". That's a hold,
 # not a pump, even though 'buy'/'like'/'deal' would otherwise read positive. Overrides _POS.
 _HOLD = re.compile(r"(do(?:n'?t| not) (?:want you to )?buy|wouldn'?t buy|not (?:a )?buy\b|"
