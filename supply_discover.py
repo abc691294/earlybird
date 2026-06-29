@@ -99,7 +99,11 @@ def _extract(client, title):
 
 def _resolve(cur, ticker, name):
     """Return a real universe ticker for this end, or None. We never propose a link to a name we
-    cannot track. Tries the model's ticker first, then a name match in the universe."""
+    cannot track. STRICT to avoid misresolutions (a loose substring name-match wrongly mapped
+    'Theon'->'Pantheon' and a CNTX biotech->Centrus): trust the model's VALIDATED ticker first;
+    fall back to name ONLY on an exact full-name match (not a substring). A near-miss returns None
+    (-> the link is dropped as unresolved), which is the safe failure - better a missed link than
+    a wrong one. The candidate-review step is the backstop, not the first line of defence."""
     if ticker:
         t = ticker.strip().upper()
         dbex(cur, "SELECT yf_ticker FROM tbl_eb_universe WHERE upper(yf_ticker)=%s LIMIT 1", t)
@@ -107,8 +111,12 @@ def _resolve(cur, ticker, name):
         if r:
             return r.yf_ticker
     if name:
-        dbex(cur, "SELECT yf_ticker FROM tbl_eb_universe WHERE name ILIKE %s LIMIT 1",
-             f"%{name.strip()}%")
+        n = name.strip()
+        # EXACT full-name match only. No substring ('Theon' must not hit 'Pantheon') and no prefix
+        # ('Micron' must not pick 'Micron Solutions' over 'Micron Technology'). If the model sends a
+        # bare/ambiguous name, this returns None and the link is dropped as unresolved - the safe
+        # failure. The model reliably sends tickers for names that matter, so this rarely bites.
+        dbex(cur, "SELECT yf_ticker FROM tbl_eb_universe WHERE lower(name)=lower(%s) LIMIT 1", n)
         r = cur.fetchone()
         if r:
             return r.yf_ticker
