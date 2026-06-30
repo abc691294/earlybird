@@ -83,14 +83,30 @@ def main():
         return
     now = dt.datetime.now(dt.timezone.utc)
     ok = dead = retry = 0
+    timed_out = []                                    # tickers whose chunk failed even after a retry
     CHUNK = 200                                       # batched yahooquery fetch - hundreds per call
     for i in range(0, len(syms), CHUNK):
         chunk = syms[i:i + CHUNK]
-        try:
-            rows, _rl = fetch_batch(chunk)
-        except Exception as ex:                       # whole-chunk failure -> leave for next run
-            print(f"  chunk {i} error: {str(ex)[:60]}")
-            time.sleep(5)
+        rows = None
+        for attempt in (1, 2):                         # one retry on a whole-chunk failure (network timeout)
+            try:
+                rows, _rl = fetch_batch(chunk)
+                break
+            except Exception as ex:
+                if attempt == 1:
+                    print(f"  chunk {i} attempt 1 failed ({str(ex)[:50]}) - retrying")
+                    time.sleep(5)
+                else:
+                    # retry also failed -> do NOT fail the task. Log which tickers, stamp them so
+                    # they are re-tried next run, count them, and carry on (run still ends OK).
+                    print(f"  chunk {i} timed out after retry - {len(chunk)} names deferred: "
+                          + ",".join(chunk))
+                    for s in chunk:
+                        dbex(cur, "UPDATE tbl_eb_fundamentals SET last_checked=%s, fetch_note=%s WHERE yf_ticker=%s",
+                             now, "chunk timeout (deferred to next run)", s)
+                    timed_out.extend(chunk)
+                    conn.commit()
+        if rows is None:                               # both attempts failed - already handled above
             continue
         for row in rows:
             sym = row[0]
@@ -119,7 +135,9 @@ def main():
                     retry += 1
         conn.commit()
         time.sleep(0.5)
-    print(f"maintain: checked {len(syms)} | {ok} updated, {dead} newly-dead (won't recheck), {retry} kept to retry")
+    to = f", {len(timed_out)} timed-out-deferred" if timed_out else ""
+    print(f"maintain: checked {len(syms)} | {ok} updated, {dead} newly-dead (won't recheck), "
+          f"{retry} kept to retry{to}  (run OK)")
     conn.close()
 
 
