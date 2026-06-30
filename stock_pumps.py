@@ -361,6 +361,12 @@ _NEG = re.compile(r"\b(slam\w*|blast\w*|attack\w*|criticis\w*|criticiz\w*|threat
 _HOLD = re.compile(r"(do(?:n'?t| not) (?:want you to )?buy|wouldn'?t buy|not (?:a )?buy\b|"
                    r"avoid buying|hold off|table buying|wait (?:to|before|until) buy|"
                    r"too early to buy|don'?t (?:chase|touch))", re.I)
+# NOT-A-PUMP: the company is the DONOR/spender on a political/charitable/social programme, not a
+# stock a figure backed. "Micron Announces $250M Investment to Support Trump Accounts for Children"
+# reads positive via 'investment'+'Trump' but is corporate giving, not an endorsement of the stock.
+_NOTPUMP = re.compile(r"(trump account|for children|child(?:ren)? and famil|donat\w*|charit\w*|"
+                      r"philanthrop\w*|foundation|to support|in support of|pledge\w*|gives? back|"
+                      r"scholarship|community (?:fund|program)|relief fund|disaster relief)", re.I)
 _WRAP = re.compile(r"\b(dow|s&p|nasdaq|futures|wall street|stock market today|markets? today)\b", re.I)
 _TRUMP = re.compile(r"\bTrump\b")  # proper noun only - excludes verb "trumps"
 
@@ -381,6 +387,8 @@ def strip_src(title):
 def sentiment(title):
     t = title or ""
     if _HOLD.search(t):  # explicit "don't buy / wait" overrides any positive verb -> not a pump
+        return "neutral"
+    if _NOTPUMP.search(t):  # corporate donation/charity/programme, not a stock endorsement -> not a pump
         return "neutral"
     # CRASH/negative language OVERRIDES positive. A plunging stock is NOT a pump even if the
     # headline also says 'stake'/'deal'/'invest' (e.g. "DJT plunge erases $766M from Trump's
