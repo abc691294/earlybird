@@ -6,6 +6,9 @@ REM Registered as a weekly Windows scheduled task. Logs to refresh_universe.log.
 set LOG="%~dp0refresh_universe.log"
 echo ============================================================ >> %LOG%
 echo Universe refresh started %DATE% %TIME% >> %LOG%
+REM Also echo to STDOUT so the task wrapper's capture is not empty (an empty capture
+REM was being misread as "killed by timeout" even on a clean ~21-min run).
+echo Universe refresh started %DATE% %TIME%
 
 REM 1. refresh the T212 instrument cache (catalogue fetch, read-only, no trading)
 cd /d "C:\Users\sbrow\OneDrive\Claude\projects\T212 Quant Pie"
@@ -30,4 +33,9 @@ REM 4. rebuild the pool off the fresh fundamentals
 python pool.py >> %LOG% 2>&1
 
 echo Universe refresh finished %DATE% %TIME% (build rc=%RC% enrich rc=%RCE%) >> %LOG%
+REM Echo the outcome to STDOUT too, so the wrapper capture shows a real finish line.
+echo Universe refresh finished %DATE% %TIME% (build rc=%RC% enrich rc=%RCE%) - OK
+REM Exit reflects the BUILD only. A maintain.py timeout is non-fatal (it retries + defers
+REM names to next run), and pool always rebuilds off whatever enriched - so the run is a
+REM success as long as the universe rebuilt. Prevents a slow-enrich week false-failing.
 exit /b %RC%
