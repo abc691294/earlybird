@@ -685,10 +685,14 @@ def send_pending_alerts(conn):
     rows = cur.fetchall()
     if not rows:
         return []
-    # per-ticker cooldown: skip names already alerted in the last 3 days (no repeat spam
-    # when fresh articles on the same event keep surfacing)
+    # per-ticker cooldown: a ticker alerts AT MOST ONCE PER MONTH (spec 01/07/2026). A recycled
+    # narrative (e.g. the Trump-Dell-stake / Pentagon story rewritten by outlet after outlet for
+    # weeks) was re-pumping Dell repeatedly - the 3-day window let the same event re-alert. 30 days
+    # means one pump per name per catalyst-window; a genuinely NEW catalyst a month later re-alerts.
+    COOLDOWN_DAYS = 30
     dbex(cur, """SELECT DISTINCT matched_ticker FROM tbl_eb_pump_news
-                   WHERE alerted=true AND fetched_on >= (now() - interval '3 days')""")
+                   WHERE alerted=true AND fetched_on >= (now() - make_interval(days => %s))""",
+         COOLDOWN_DAYS)
     cooldown = {r.matched_ticker for r in cur.fetchall()}
     FRESH_DAYS = 7   # spec 10/06/2026: nothing surfaces unless provably <= 7 days old
     now = dt.datetime.utcnow()
