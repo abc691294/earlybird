@@ -467,6 +467,26 @@ def match_company(title, tok_map, tick_map):
     return None, None, None, None
 
 
+def _title_is_about(title, ticker, name, tok_map, tick_map):
+    """True if `title` is genuinely ABOUT `ticker` (not just a Trump story in its news feed).
+    Guards Section B, where a per-ticker scraper pulls tangential articles (an Axon/Trump story
+    landed in DELL's feed). Accepts if: match_company resolves to this ticker, OR the ticker's
+    first name-token (>=4 chars, e.g. 'dell') appears as a whole word in the title, OR the bare
+    ticker symbol appears. Otherwise the headline is about some OTHER company - reject."""
+    t = (title or "")
+    mtk, _, _, _ = match_company(strip_src(t), tok_map, tick_map)
+    if mtk and mtk == ticker:
+        return True
+    low = t.lower()
+    tok = _name_token(name)
+    if tok and re.search(r"\b" + re.escape(tok) + r"\b", low):
+        return True
+    base = (ticker or "").split(".")[0]
+    if base and re.search(r"\b" + re.escape(base.lower()) + r"\b", low):
+        return True
+    return False
+
+
 def pos_near(title, token, window=45):
     """True if a positive verb sits within `window` chars of the company token -
     ties Trump's praise/buy TO the company (kills 'Tom Brady'/wrap false matches)."""
@@ -834,6 +854,12 @@ def main():
     for r in cur.fetchall():
         if not is_trump(r.title) or is_wrap(r.title):
             continue  # require the proper noun and drop generic index/market-wrap headlines
+        # VERIFY the headline is actually ABOUT this ticker, not just a Trump story that landed in
+        # its news feed. A per-ticker scraper pulls tangential "Trump trades" articles - e.g. an
+        # AXON headline ("Trump bought Taser maker Axon") appeared in DELL's feed and was blindly
+        # tagged DELL. Require the ticker's own name-token OR an explicit ticker match in the title.
+        if not _title_is_about(r.title, r.yf_ticker, r.name, tok_map, tick_map):
+            continue
         guid = ("pool:" + (r.url or (r.yf_ticker + r.title))[:300])[:320]
         if guid in seen:
             continue
