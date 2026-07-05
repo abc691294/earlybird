@@ -269,19 +269,23 @@ def section_watchlist(conn, conv):
         # ACTION: every Section 3 name gets a clear action, not just a description.
         # Buy needs a timing reason (a buying-window dip or a fresh catalyst); a downtrend with no
         # such reason is Hold; a held name whose trend has broken hard is flagged to review.
+        # ACTION requires a real TIMING signal - a dip-in-a-rising-trend buying window (the tested
+        # setup) or a broken thesis. Fresh news ALONE is NOT an action (with 100+ watched names,
+        # dozens have some news each week - that flooded the actions list with 44 "buys"). Fresh
+        # news is surfaced as an UPDATE instead, so 'actions' stays the few names that truly need a
+        # decision this week.
         in_window = (r.mv_1m or 0) <= -10 and (r.mv_6m or 0) > 0
-        fresh_cat = r.last_pub is not None
         broken = (r.mv_1m or 0) <= -25 and (r.mv_6m or 0) < 0     # hard drop AND trend rolled over
         if r.held:
-            if in_window or fresh_cat:
-                action, areason = "BUY MORE", ("in the dip-in-a-rising-trend window" if in_window else "on the fresh catalyst")
+            if in_window:
+                action, areason = "BUY MORE", "in the dip-in-a-rising-trend window"
             elif broken:
                 action, areason = "REVIEW - trend broken", "down hard and the longer trend has rolled over - check the thesis still holds"
             else:
                 action, areason = "HOLD", "no action needed this week"
         else:
-            if in_window or fresh_cat:
-                action, areason = "BUY", ("in the dip-in-a-rising-trend window" if in_window else "on the fresh catalyst")
+            if in_window:
+                action, areason = "BUY", "in the dip-in-a-rising-trend window"
             else:
                 action, areason = "WATCH", "no reason to act this week"
         tag = " (held - real money)" if r.held else (" (high priority)" if r.priority == "high" else "")
@@ -458,6 +462,70 @@ def section_selfcheck(conn):
     return out
 
 
+def section_market(conn):
+    """A brief, data-driven market read: which future-tech sectors are running vs pulling back,
+    from the average recent move of the strong-pool names in each sector (tbl_eb_moves). Returns a
+    plain-English paragraph (str), or '' if there isn't enough move data. No invented numbers."""
+    cur = conn.cursor()
+    try:
+        dbex(cur, """SELECT p.sector, count(*) n,
+                            round(avg(m.mv_1m)::numeric,1) m1, round(avg(m.mv_3m)::numeric,1) m3
+                     FROM tbl_eb_pool p JOIN tbl_eb_moves m ON m.yf_ticker=p.yf_ticker
+                     WHERE p.fit='strong' AND m.mv_1m IS NOT NULL
+                     GROUP BY p.sector HAVING count(*) >= 3
+                     ORDER BY m1 DESC""")
+        rows = cur.fetchall()
+    except Exception as ex:
+        print(f"market section unavailable: {ex}"); return ""
+    if len(rows) < 3:
+        return ""
+    up_1m = [r for r in rows if (r.m1 or 0) > 0]
+    dn_1m = [r for r in rows if (r.m1 or 0) < 0]
+    # overall tone: are most sectors up or down over the past month, and up over 3 months?
+    med3 = sorted(float(r.m3 or 0) for r in rows)[len(rows) // 2]
+    tone = ("Most future-tech sectors pulled back over the past month but remain well up over three, "
+            "a pause within an uptrend." if len(dn_1m) > len(up_1m) and med3 > 0
+            else "Future-tech sectors broadly rose over the past month." if len(up_1m) >= len(dn_1m)
+            else "Future-tech sectors were broadly weak over both the past month and three months.")
+    hottest = rows[0]
+    coldest = rows[-1]
+    strong3 = max(rows, key=lambda r: float(r.m3 or 0))
+    bits = [tone]
+    if (hottest.m1 or 0) > 0:
+        bits.append(f"{hottest.sector} led over the month (avg {hottest.m1:+}% across {hottest.n} names).")
+    bits.append(f"{coldest.sector} pulled back hardest (avg {coldest.m1:+}% over the month).")
+    if float(strong3.m3 or 0) > 0:
+        bits.append(f"Over three months {strong3.sector} is strongest (avg {strong3.m3:+}%), "
+                    "so the medium-term trend is intact.")
+    return " ".join(bits)
+
+
+def section_glance(rec, wl_actions, cards, pumps, wl_count):
+    """The 'at a glance' summary block: overall picture + the key actions distilled. Built from the
+    same data the detail sections use, so it never disagrees with them. Returns a list of HTML parts."""
+    n_act = len(wl_actions or [])
+    n_card = len(cards or [])
+    out = []
+    # overall picture line
+    picture = (f"{wl_count} names on the watchlist. "
+               + (f"{n_act} need a decision this week" if n_act else "Nothing needs a decision this week")
+               + (f"; {n_card} new idea(s) worth a look." if n_card else "; no new ideas earned a card."))
+    out.append(f"<p style=\"{P}\">{html.escape(picture)}</p>")
+    # key actions - the distilled 'what do I actually do'. Show the recommendation, then the top few
+    # action lines only (the full list is in Section 3.1). Capped so the summary stays a summary.
+    out.append(f"<p style=\"{H}\">Key actions</p>")
+    if rec:
+        out.append(f"<p style=\"{P}\"><b>Recommendation:</b> {html.escape(rec)}</p>")
+    CAP = 5
+    if wl_actions:
+        out.extend(wl_actions[:CAP])
+        if n_act > CAP:
+            out.append(f"<p style=\"{P}\">...and {n_act - CAP} more in 'Holdings and watchlist' below.</p>")
+    if not rec and not wl_actions:
+        out.append(f"<p style=\"{P}\">No buys or sells required this week. Hold and watch.</p>")
+    return out
+
+
 def build_and_send(conn):
     try:
         conv_rows, _period = cross_fund_convergence(conn, min_funds=2, limit=60)
@@ -474,11 +542,28 @@ def build_and_send(conn):
     supply = section_supply(conn)
     inbound = section_inbound(conn)
     selfcheck = section_selfcheck(conn)
+    market = section_market(conn)
+
+    # watchlist count for the glance summary
+    cur = conn.cursor()
+    try:
+        dbex(cur, "SELECT count(*) n FROM tbl_eb_watchlist WHERE active=true")
+        wl_count = cur.fetchone().n
+    except Exception:
+        wl_count = 0
 
     today = dt.date.today().strftime("%d/%m/%Y")
-    parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}. Three parts, same every week: "
-             "the recommendation, ideas worth considering, and anything we hold "
-             "or watch that needs attention.</p>"]
+    parts = [f"<p style=\"{P}\">EarlyBird weekly brief, {today}.</p>"]
+
+    # ---- Section 0: at a glance (overall picture + key actions + market read) ----
+    parts.append(f"<p style=\"{H}\">This week at a glance</p>")
+    parts.extend(section_glance(rec, wl_actions, cards, pumps, wl_count))
+    if market:
+        parts.append(f"<p style=\"{H}\">Market read</p>")
+        parts.append(f"<p style=\"{P}\">{html.escape(market)}</p>")
+
+    parts.append(f"<p style=\"{H}\">The detail</p>")
+    parts.append(f"<p style=\"{P}\"><i>Everything above, in full. The same three parts every week.</i></p>")
 
     parts.append(f"<p style=\"{H}\">1. Recommendation</p>")
     parts.append(f"<p style=\"{P}\">{html.escape(rec) if rec else 'Nothing earns a recommendation this week.'}</p>")

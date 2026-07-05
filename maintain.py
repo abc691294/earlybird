@@ -22,8 +22,12 @@ from reenrich import fetch_batch, UPSERT, _is_rate_limit, PACE_FAST
 import time
 
 BATCH = 10
-# a 404-style note means the ticker is unresolvable - mark dead, stop checking it
-_DEAD_NOTE = ("not found", "404", "no data", "delisted", "no timezone", "possibly delisted")
+# a 404-style note means the ticker is unresolvable - mark dead, stop checking it.
+# "no data" is DELIBERATELY NOT here: reenrich returns "no data" for ANY empty/flaky fetch that
+# isn't an explicit rate-limit string, so treating it as dead wiped 8900+ real names (incl AAPL/
+# MSFT/NVDA) twice on 05/07/2026 when Yahoo threw a wave of empty responses. Only an EXPLICIT
+# unresolvable signal marks a name dead; an ambiguous empty response is transient -> retry.
+_DEAD_NOTE = ("not found", "404", "delisted", "no timezone", "possibly delisted")
 
 
 def _is_dead_note(note):
