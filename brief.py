@@ -641,7 +641,7 @@ def build_and_send(conn):
     body = "<div style='max-width:680px'>" + "".join(parts) + "</div>"
     ok = send_alert(f"EarlyBird weekly brief - {today}", body)
     print(f"brief: {len(cards)} cards, rec={'yes' if rec else 'no'}, "
-          f"{len(watch)} watchlist items, {len(pumps)} stock-pump items, "
+          f"{len(wl_actions)} actions + {len(wl_updates)} updates, {len(pumps)} stock-pump items, "
           f"{len(selfcheck)} self-check items, emailed={ok}")
     return ok
 
