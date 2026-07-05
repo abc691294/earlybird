@@ -112,10 +112,14 @@ def main():
             sym = row[0]
             if row[18]:                               # fetch_ok -> write the data
                 cur.execute(UPSERT, row)
-                # a price-only row with no market_cap AND no industry is an ETF/fund/thin secondary
-                # listing - no company fundamentals exist for it, so it can never enrich usefully.
-                # Mark dead so it stops counting as a gap and the loop stops re-checking it.
-                if not row[3] and not row[16]:        # no market_cap (idx 3) and no industry (idx 16)
+                # a PRICE-ONLY row (has a price, but no market_cap AND no industry) is an ETF/fund/
+                # thin secondary listing - no company fundamentals exist, so it can never enrich.
+                # Mark dead so it stops counting as a gap. CRITICAL: require row[2] (price) to be
+                # present - a throttled/failed fetch also has null market_cap+industry, but null
+                # PRICE too. Without this price check, a rate-limited run wrongly killed 8500+ real
+                # names incl AAPL/MSFT/NVDA (05/07/2026). Price present = real ETF; price null = a
+                # failed fetch -> transient, never dead.
+                if row[1] and not row[3] and not row[16]:  # price(1) present, no market_cap(3)/industry(16)
                     dbex(cur, "UPDATE tbl_eb_fundamentals SET dead=true, last_checked=%s WHERE yf_ticker=%s", now, sym)
                     dead += 1
                 else:
