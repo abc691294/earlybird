@@ -89,6 +89,16 @@ def main():
     ok = dead = retry = 0
     timed_out = []                                    # tickers whose chunk failed even after a retry
     CHUNK = 200                                       # batched yahooquery fetch - hundreds per call
+    # ADAPTIVE BACKOFF (root-cause fix 05/07/2026): the full --all run has ~51 chunks. With no
+    # backoff at a flat 0.5s pace it exhausted Yahoo, which then returned EMPTY ('no data') for the
+    # rest of the run - looking like thousands of dead names. Now: when a chunk comes back mostly
+    # empty (a throttle signal, whether flagged rate_limit OR silent 'no data'), slow down; after a
+    # few consecutive mostly-empty chunks, STOP the run - the unprocessed names keep their prior data
+    # for next time. Better a partial refresh than a hammered API returning garbage.
+    pace = 0.5
+    empty_streak = 0
+    EMPTY_FRAC = 0.6            # a chunk >=60% empty = Yahoo is throttling us
+    STOP_AFTER = 3             # consecutive throttled chunks -> stop, don't hammer
     for i in range(0, len(syms), CHUNK):
         chunk = syms[i:i + CHUNK]
         rows = None
@@ -112,6 +122,22 @@ def main():
                     conn.commit()
         if rows is None:                               # both attempts failed - already handled above
             continue
+        # throttle detection: how empty was this chunk? (ok=False on a fetch = no data returned)
+        n_empty = sum(1 for row in rows if not row[18])
+        throttled = rows and (n_empty / len(rows)) >= EMPTY_FRAC
+        if throttled:
+            empty_streak += 1                           # cumulative count (does NOT reset on a good
+            pace = min(pace * 2, 8.0)                   # chunk) - alternating empty/full chunks still
+            print(f"  chunk {i}: {n_empty}/{len(rows)} empty - throttled, pace now {pace}s "  # trips the stop
+                  f"(throttled {empty_streak}/{STOP_AFTER})")
+            if empty_streak >= STOP_AFTER:
+                print(f"  STOP: {STOP_AFTER} throttled chunks this run - Yahoo is rate-limiting. "
+                      f"Ending run; {len(syms) - i - len(chunk)} names left keep prior data for next run.")
+                break
+        else:
+            pace = max(pace / 2, 0.5)                   # recover pace when Yahoo is happy again
+            # note: empty_streak is NOT reset - a run that keeps hitting throttled chunks (even with
+            # good ones between) is still being rate-limited overall, and should stop, not thrash.
         for row in rows:
             sym = row[0]
             if row[18]:                               # fetch_ok -> write the data
@@ -142,7 +168,7 @@ def main():
                          now, note[:200], sym)
                     retry += 1
         conn.commit()
-        time.sleep(0.5)
+        time.sleep(pace)
     to = f", {len(timed_out)} timed-out-deferred" if timed_out else ""
     print(f"maintain: checked {len(syms)} | {ok} updated, {dead} newly-dead (won't recheck), "
           f"{retry} kept to retry{to}  (run OK)")
