@@ -367,6 +367,34 @@ _HOLD = re.compile(r"(do(?:n'?t| not) (?:want you to )?buy|wouldn'?t buy|not (?:
 _NOTPUMP = re.compile(r"(trump account|for children|child(?:ren)? and famil|donat\w*|charit\w*|"
                       r"philanthrop\w*|foundation|to support|in support of|pledge\w*|gives? back|"
                       r"scholarship|community (?:fund|program)|relief fund|disaster relief)", re.I)
+# PUNDIT OPINION - a TV/analyst view is not a company event. "Jim Cramer Advises Investors to
+# Wait on Vertiv Stock Dip" is one man's opinion, no catalyst; it slipped through because _HOLD
+# only covers explicit "don't buy" phrasing, not "advises to wait". Talking heads, ratings notes
+# and listicles all get filtered here rather than widening _HOLD, which guards real sentiment.
+_PUNDIT = re.compile(r"(jim cramer|cramer\b|mad money|analysts? says?|"
+                     r"advises? investors?|price target|(?:up|down)grades?\b|initiat\w+ coverage|"
+                     r"^top (?:\d+ )?(?:picks?|stocks?)|best stocks? to|should you buy|"
+                     r"reasons to buy)", re.I)
+# Deliberately NOT in _PUNDIT (each killed a REAL event when trialled 23/07/2026):
+#   'analysts? (see|expect)' - "Nvidia Reveals Over 9% Stake, Analyst Sees More Upside" is a real
+#      company event with a pundit clause bolted on the end. The event is the news.
+#   'is .{1,30} a buy'       - "Intel soared after Trump said Apple will build chips with it.
+#      Is it a buy?" is a genuine Trump pump phrased as a question.
+#   'top pick' mid-headline  - '"Buy Dell!" DELL surges on Trump's remarks! President recommends
+#      it for the third time - is it the top pick to ride the AI server boom?' is a real Trump
+#      pump. Anchored to ^ so only listicle HEADLINES ("Top 5 picks for...") are filtered.
+#   'stocks to watch'        - same trailing-clause problem.
+# The rule: filter only when the OPINION IS THE SUBJECT of the headline, never when it trails
+# a real event. Test any new pattern against the FULL stored title, not a truncated sample.
+# FUND FLOW - one fund's trade is not news about the company. "Cathie Wood's ARK sells AMD, buys
+# SpaceX" matches _POS on 'buys' and reads as a pump for AMD, which ARK was SELLING. Position
+# changes, 13F disclosures and stake trims are portfolio news, not company events.
+_FUNDFLOW = re.compile(r"(ark (?:invest|funds?|etf)?\s*(?:buys?|sells?|sold|trims?|adds?|dumps?)|"
+                       r"cathie wood|13f\b|hedge fund|(?:trims?|boosts?|raises?|cuts?|lowers?|"
+                       r"reduces?) (?:its |his |her |their )?(?:stake|position|holding)|"
+                       r"(?:stake|position|holding) (?:in )?.{0,25}(?:increase|decrease)d?|"
+                       r"(?:adds? to|exits?) (?:its |his |her |their )?position|"
+                       r"portfolio (?:manager|move)|institutional (?:investors?|holdings?))", re.I)
 _WRAP = re.compile(r"\b(dow|s&p|nasdaq|futures|wall street|stock market today|markets? today)\b", re.I)
 _TRUMP = re.compile(r"\bTrump\b")  # proper noun only - excludes verb "trumps"
 
@@ -389,6 +417,10 @@ def sentiment(title):
     if _HOLD.search(t):  # explicit "don't buy / wait" overrides any positive verb -> not a pump
         return "neutral"
     if _NOTPUMP.search(t):  # corporate donation/charity/programme, not a stock endorsement -> not a pump
+        return "neutral"
+    if _PUNDIT.search(t):   # TV/analyst opinion, ratings note or listicle - no company event
+        return "neutral"
+    if _FUNDFLOW.search(t):  # a fund's own trade/13F - portfolio news, not company news
         return "neutral"
     # CRASH/negative language OVERRIDES positive. A plunging stock is NOT a pump even if the
     # headline also says 'stake'/'deal'/'invest' (e.g. "DJT plunge erases $766M from Trump's
