@@ -145,8 +145,8 @@ def main():
         body = (f"<b>{html.escape(r.name or sym)} ({sym})</b> has reached your buy target: "
                 f"now ${last:.2f}, at or below your ${target:.2f} level. This is a planned trade "
                 f"entry you set, NOT the tested dip-in-uptrend pattern - your own trade plan applies.")
-        if r.flags:
-            body += f"<br><b>Notes:</b> {html.escape(r.flags[:240])}"
+        if r.triggers:
+            body += f"<br><b>Notes:</b> {html.escape(r.triggers[:240])}"
         blocks.append(f"<p style=\"{P}\">{body}</p>")
     for sym, last, target in sell_hits:
         r = watch[sym]
