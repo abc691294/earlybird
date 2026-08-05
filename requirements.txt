@@ -3,3 +3,4 @@ feedparser>=6.0
 yfinance>=0.2
 yahooquery>=2.3
 pandas>=2.0
+anthropic>=0.40,<1.0
