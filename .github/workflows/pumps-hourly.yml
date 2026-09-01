@@ -1,7 +1,7 @@
 name: Stock Pumps Hourly Scan
 on:
-  schedule:
-    - cron: '0 * * * *'        # every hour, 24/7 (UTC)
+  # hourly schedule DISABLED 05/08/2026 (user: pump alerts never accurate or relevant).
+  # Kept as manual-only so it can be re-run by hand if needed. To re-enable, restore the cron.
   workflow_dispatch:            # allow manual run
 jobs:
   scan:

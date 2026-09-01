@@ -40,8 +40,10 @@ jobs:
                                      # must NOT abort move_scan/stock_pumps/watch_alert below it
       - name: Move detector
         run: python move_scan.py
-      - name: Stock pumps scan (Trump + Huang + hyperscaler CEOs + Altman + Su)
-        run: python stock_pumps.py
+      # Stock pumps scan DISABLED 05/08/2026 (user: pump alerts never accurate or relevant).
+      # Code + tbl_eb_pump_news left intact; re-add this step to restore.
+      #   - name: Stock pumps scan (Trump + Huang + hyperscaler CEOs + Altman + Su)
+      #     run: python stock_pumps.py
       - name: Theme radar (find emerging themes we have no keyword for yet)
         run: python theme_radar.py
       - name: Engine-room digest (log only, no email)
