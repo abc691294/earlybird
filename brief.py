@@ -7,7 +7,6 @@ Per SPEC.md (10/06/2026), the brief always has the same three parts:
   2. A recommendation ("I recommend X because Y") - or a plain statement that
      nothing earns one.
   3. Anything we already hold or watch that needs attention.
-Plus a short "stock pumps" section: companies a market-moving figure has backed (verified, <=7 days).
 
 Writing rules are baked in here, not left to chance: plain British English, no
 jargon (any unavoidable technical term is defined in brackets the first time),
@@ -344,35 +343,6 @@ def section_inbound(conn):
     return out
 
 
-# which figure pumped it -> plain label for the brief
-_FIG_LABEL = {"trump": "Trump", "huang": "Nvidia/Huang", "nadella": "Microsoft/Nadella",
-              "pichai": "Google/Pichai", "jassy": "Amazon/Jassy", "zuck": "Meta/Zuckerberg",
-              "altman": "OpenAI/Altman", "su": "AMD/Su",
-              "bezos": "Bezos/Blue Origin", "wood": "Cathie Wood/ARK",
-              "son": "SoftBank/Son", "intel": "Intel/Tan"}
-
-
-def section_pumps(conn):
-    """Stock pumps - established names a market-moving figure (Trump, Huang, the hyperscaler
-    CEOs, Altman, Su) has backed in the last 7 days, dates verified. One line per ticker."""
-    cur = conn.cursor()
-    try:
-        dbex(cur, """
-          SELECT DISTINCT ON (matched_ticker) matched_ticker, matched_name, figure,
-                 LEFT(title, 90) t, published, link
-          FROM tbl_eb_pump_news
-          WHERE in_universe = true AND sentiment = 'positive' AND date_verified = true
-            AND published >= now() - interval '7 days'
-          ORDER BY matched_ticker, published DESC""")
-        rows = cur.fetchall()
-    except Exception as ex:
-        print(f"pumps unavailable: {ex}"); return []
-    return [f"<p style=\"{P}\"><b>{html.escape(r.matched_name or r.matched_ticker)}</b> "
-            f"({r.published:%d/%m}, via {_FIG_LABEL.get(r.figure, r.figure or 'a figure')}): "
-            f"{html.escape(r.t or '')}{_alink(r.link)} {_linktag(r.matched_ticker)}</p>"
-            for r in rows[:8]]
-
-
 def section_chokepoints(conn):
     """The structurally-protected names: critical input, few/sole suppliers, no substitute, AND
     sold out / backlogged right now. A supplier nobody can route around has pricing power and a
@@ -500,7 +470,7 @@ def section_market(conn):
     return " ".join(bits)
 
 
-def section_glance(rec, wl_actions, cards, pumps, wl_count):
+def section_glance(rec, wl_actions, cards, wl_count):
     """The 'at a glance' summary block: overall picture + the key actions distilled. Built from the
     same data the detail sections use, so it never disagrees with them. Returns a list of HTML parts."""
     n_act = len(wl_actions or [])
@@ -536,7 +506,6 @@ def build_and_send(conn):
 
     cards, rec = section_candidates(conn, conv)
     wl_actions, wl_updates = section_watchlist(conn, conv)
-    pumps = section_pumps(conn)
     choke = section_chokepoints(conn)
     radar = section_radar(conn)
     supply = section_supply(conn)
@@ -557,7 +526,7 @@ def build_and_send(conn):
 
     # ---- Section 0: at a glance (overall picture + key actions + market read) ----
     parts.append(f"<p style=\"{H}\">This week at a glance</p>")
-    parts.extend(section_glance(rec, wl_actions, cards, pumps, wl_count))
+    parts.extend(section_glance(rec, wl_actions, cards, wl_count))
     if market:
         parts.append(f"<p style=\"{H}\">Market read</p>")
         parts.append(f"<p style=\"{P}\">{html.escape(market)}</p>")
@@ -596,10 +565,6 @@ def build_and_send(conn):
         parts.extend(wl_updates)
     else:
         parts.append(f"<p style=\"{P}\">No other updates this week.</p>")
-
-    if pumps:
-        parts.append(f"<p style=\"{H}\">Stock pumps - companies a big name has backed (7 days, dates checked)</p>")
-        parts.extend(pumps)
 
     if choke:
         parts.append(f"<p style=\"{H}\">Chokepoints - critical suppliers that are sold out right now</p>")
@@ -641,7 +606,7 @@ def build_and_send(conn):
     body = "<div style='max-width:680px'>" + "".join(parts) + "</div>"
     ok = send_alert(f"EarlyBird weekly brief - {today}", body)
     print(f"brief: {len(cards)} cards, rec={'yes' if rec else 'no'}, "
-          f"{len(wl_actions)} actions + {len(wl_updates)} updates, {len(pumps)} stock-pump items, "
+          f"{len(wl_actions)} actions + {len(wl_updates)} updates, "
           f"{len(selfcheck)} self-check items, emailed={ok}")
     return ok
 
